@@ -16,6 +16,41 @@ This directory contains the Python test script for verifying TLV protocol commun
 
 **Baud Rate:** 921600
 
+## Firmware Setup
+### 1. Enable UART in RPi5:
+Open config file and edit:
+```bash
+sudo nano /boot/firmware/config.txt
+```
+
+Add:
+```
+enable_uart=1
+dtoverlay=uart0-pi5
+```
+
+To make sure console is not occupying the port, examine:
+```bash
+sudo nano /boot/firmware/cmdline.txt
+```
+
+Remove anything like:
+```
+console=serial0,115200
+console=ttyAMA0,115200
+```
+**Reboot** after changes are made.
+
+After reboot, list devices
+```
+ls /dev/ttyAMA*
+```
+
+You should be able to see the UART loaded as ttyAMA0 
+```
+/dev/ttyAMA0
+```
+
 ## Software Setup
 
 ### 1. Install Dependencies
