@@ -199,8 +199,8 @@ logs/
 
 
 # TLV Type Generated Definitions
-TLV_TypeDefs.h
-TLV_TypeDefs.py
+# TLV_TypeDefs.h
+# TLV_TypeDefs.py
 
 # Large binary assets (document separately)
 # *.stl  # Uncomment if STL files are too large
