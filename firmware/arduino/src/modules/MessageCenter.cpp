@@ -4,8 +4,8 @@
  *
  * Telemetry batching:
  *   sendTelemetry() calls beginFrame() once, appends each due TLV with
- *   addTlvPacket(), then calls sendFrame() — transmitting a single
- *   multi-TLV frame per 100 Hz tick instead of N separate frames.
+ *   appendTlv(), then calls sendFrame() to queue a single multi-TLV frame
+ *   per scheduler tick instead of N separate frames.
  *
  * Incoming:
  *   processIncoming() feeds raw bytes into the TLV decoder; decodeCallback()
@@ -14,6 +14,8 @@
  */
 
 #include "MessageCenter.h"
+#include "DebugLog.h"
+#include "LoopMonitor.h"
 #include "RobotKinematics.h"
 #include "SensorManager.h"
 #include "UserIO.h"
@@ -28,6 +30,25 @@
 // External references to motor arrays (defined in arduino.ino)
 extern DCMotor dcMotors[NUM_DC_MOTORS];
 
+#ifdef DEBUG_UART_RX_BYTES
+static void logRawRxBurst(const uint8_t *bytes, uint8_t count)
+{
+    if (bytes == nullptr || count == 0) {
+        return;
+    }
+
+    DEBUG_LOG.print(F("[RXB]"));
+    for (uint8_t i = 0; i < count; ++i) {
+        DEBUG_LOG.write(' ');
+        if (bytes[i] < 0x10U) {
+            DEBUG_LOG.write('0');
+        }
+        DEBUG_LOG.print((unsigned int)bytes[i], HEX);
+    }
+    DEBUG_LOG.write('\n');
+}
+#endif
+
 // ============================================================================
 // STATIC MEMBER INITIALIZATION
 // ============================================================================
@@ -35,12 +56,18 @@ extern DCMotor dcMotors[NUM_DC_MOTORS];
 struct TlvEncodeDescriptor MessageCenter::encodeDesc_;
 struct TlvDecodeDescriptor MessageCenter::decodeDesc_;
 
+uint8_t MessageCenter::txStorage_[TX_BUFFER_SIZE];
+uint8_t MessageCenter::rxStorage_[RX_BUFFER_SIZE];
+struct TlvHeader MessageCenter::decodeHeaders_[TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(RX_BUFFER_SIZE)];
+uint8_t *MessageCenter::decodeData_[TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(RX_BUFFER_SIZE)];
 uint8_t *MessageCenter::txBuffer_;
-uint8_t MessageCenter::rxBuffer_[RX_BUFFER_SIZE];
-uint16_t MessageCenter::rxFill_ = 0;
+uint16_t MessageCenter::txPendingLen_ = 0;
+uint16_t MessageCenter::txPendingOffset_ = 0;
+uint32_t MessageCenter::txDroppedFrames_ = 0;
 
 uint32_t MessageCenter::lastHeartbeatMs_ = 0;
 uint32_t MessageCenter::lastCmdMs_ = 0;
+uint32_t MessageCenter::lastRxByteMs_ = 0;
 bool MessageCenter::heartbeatValid_ = true;   // true → 2s grace period on boot before timeout fires
 uint16_t MessageCenter::heartbeatTimeoutMs_ = HEARTBEAT_TIMEOUT_MS;
 
@@ -51,6 +78,16 @@ uint16_t MessageCenter::servoEnabledMask_ = 0;
 uint16_t MessageCenter::loopTimeAvgUs_ = 0;
 uint16_t MessageCenter::loopTimeMaxUs_ = 0;
 uint16_t MessageCenter::uartRxErrors_ = 0;
+uint16_t MessageCenter::crcErrorCount_ = 0;
+uint16_t MessageCenter::frameLenErrorCount_ = 0;
+uint16_t MessageCenter::tlvErrorCount_ = 0;
+uint16_t MessageCenter::oversizeErrorCount_ = 0;
+uint16_t MessageCenter::rxBytesWindow_ = 0;
+uint16_t MessageCenter::rxFramesWindow_ = 0;
+uint16_t MessageCenter::rxTlvsWindow_ = 0;
+uint16_t MessageCenter::rxHeartbeatsWindow_ = 0;
+uint16_t MessageCenter::txBytesWindow_ = 0;
+uint16_t MessageCenter::txFramesWindow_ = 0;
 
 uint32_t MessageCenter::lastDCStatusSendMs_ = 0;
 uint32_t MessageCenter::lastStepStatusSendMs_ = 0;
@@ -65,6 +102,18 @@ uint32_t MessageCenter::lastLidarSendMs_ = 0;
 uint32_t MessageCenter::lastUltrasonicSendMs_ = 0;
 
 bool MessageCenter::pendingMagCal_ = false;
+bool MessageCenter::pendingServoStatus_ = false;
+bool MessageCenter::pendingDCStatus_ = false;
+bool MessageCenter::servoHardwareDirty_ = false;
+uint16_t MessageCenter::servoPulseDirtyMask_ = 0;
+uint16_t MessageCenter::servoOffDirtyMask_ = 0;
+uint16_t MessageCenter::servoPendingPulseUs_[NUM_SERVO_CHANNELS] = {0};
+bool MessageCenter::servoUnavailableLogged_ = false;
+bool MessageCenter::servoI2CFaultLogged_ = false;
+MessageCenter::DeferredMagCalAction MessageCenter::deferredMagCalAction_ = MessageCenter::DEFER_MAG_NONE;
+float MessageCenter::deferredMagCalOffsetX_ = 0.0f;
+float MessageCenter::deferredMagCalOffsetY_ = 0.0f;
+float MessageCenter::deferredMagCalOffsetZ_ = 0.0f;
 bool MessageCenter::initialized_ = false;
 volatile uint8_t MessageCenter::faultLatchFlags_ = 0;
 
@@ -80,43 +129,75 @@ void MessageCenter::init()
     // Open Serial2 for RPi communication
     RPI_SERIAL.begin(RPI_BAUD_RATE);
 
-    // Initialise TX encoder
-    initEncodeDescriptor(&encodeDesc_, TX_BUFFER_SIZE, DEVICE_ID, ENABLE_CRC_CHECK);
+    // Initialise TX encoder using static storage to avoid AVR heap pressure.
+    memset(&encodeDesc_, 0, sizeof(encodeDesc_));
+    encodeDesc_.buffer = txStorage_;
+    encodeDesc_.bufferSize = TX_BUFFER_SIZE;
+    encodeDesc_.bufferIndex = sizeof(struct FrameHeader);
+    encodeDesc_.crc = ENABLE_CRC_CHECK;
+    memcpy(encodeDesc_.frameHeader.magicNum, FRAME_HEADER_MAGIC_NUM, sizeof(FRAME_HEADER_MAGIC_NUM));
+    encodeDesc_.frameHeader.deviceId = DEVICE_ID;
     txBuffer_ = encodeDesc_.buffer;
 
-    // Initialise RX decoder with callback
-    initDecodeDescriptor(&decodeDesc_, RX_BUFFER_SIZE, ENABLE_CRC_CHECK, decodeCallback);
+    // Initialise RX decoder using static storage to avoid malloc() in setup().
+    memset(&decodeDesc_, 0, sizeof(decodeDesc_));
+    decodeDesc_.buffer = rxStorage_;
+    decodeDesc_.bufferSize = RX_MAX_FRAME_ACCEPT_SIZE;
+    decodeDesc_.crc = ENABLE_CRC_CHECK;
+    decodeDesc_.decodeState = Init;
+    decodeDesc_.errorCode = NoError;
+    decodeDesc_.callback = decodeCallback;
+    decodeDesc_.tlvHeaders = decodeHeaders_;
+    decodeDesc_.tlvData = decodeData_;
 
-    // Stagger telemetry timers so large packets don't land on the same tick.
-    // Offsets chosen so DC (20ms), stepper (100ms), and servo (40ms) never
-    // all fire in the same taskUART call.
+    // Stagger the bring-up telemetry timers so the 25 Hz traffic alternates
+    // across adjacent 20 ms UART task slots.
     uint32_t now = millis();
-    lastDCStatusSendMs_    = now;        // fires at now+20ms
-    lastStepStatusSendMs_  = now - 50;  // fires at now+50ms (midway through DC cycle)
-    lastServoStatusSendMs_ = now - 10;  // fires at now+30ms (between DC ticks)
-    lastKinematicsSendMs_  = now;
-    lastIMUSendMs_         = now;
-    lastIOStatusSendMs_    = now;
+    lastDCStatusSendMs_    = now;       // first 25 Hz DC frame at now+40 ms
+    lastStepStatusSendMs_  = now - 180; // first 5 Hz stepper frame at now+20 ms
+    lastServoStatusSendMs_ = now - 80;  // first 5 Hz servo frame at now+120 ms
+    lastKinematicsSendMs_  = now - 20;  // first 25 Hz kinematics frame at now+20 ms
+    lastIMUSendMs_         = now - 20;  // first 25 Hz IMU frame at now+20 ms
+    lastIOStatusSendMs_    = now;       // first 25 Hz I/O frame at now+40 ms
     lastVoltageSendMs_     = now;
     lastStatusSendMs_      = now;
     lastMagCalSendMs_      = now;
-    lastLidarSendMs_       = now;
-    lastUltrasonicSendMs_  = now;
+    lastLidarSendMs_       = now - 80;  // first 10 Hz lidar frame at now+20 ms
+    lastUltrasonicSendMs_  = now - 180; // first 5 Hz ultrasonic frame at now+20 ms
 
     lastHeartbeatMs_ = now;
     lastCmdMs_ = now;
+    lastRxByteMs_ = now;
     // Start valid so SafetyManager doesn't fire during the boot grace period.
     // checkHeartbeatTimeout() will clear this after HEARTBEAT_TIMEOUT_MS if no
     // TLV arrives. routeMessage() re-sets it on every received packet.
     heartbeatValid_ = true;
     pendingMagCal_ = false;
+    pendingServoStatus_ = false;
+    pendingDCStatus_ = false;
+    rxBytesWindow_ = 0;
+    rxFramesWindow_ = 0;
+    rxTlvsWindow_ = 0;
+    rxHeartbeatsWindow_ = 0;
+    txBytesWindow_ = 0;
+    txFramesWindow_ = 0;
+    servoHardwareDirty_ = false;
+    servoPulseDirtyMask_ = 0;
+    servoOffDirtyMask_ = 0;
+    memset(servoPendingPulseUs_, 0, sizeof(servoPendingPulseUs_));
+    servoUnavailableLogged_ = false;
+    servoI2CFaultLogged_ = false;
+    deferredMagCalAction_ = DEFER_MAG_NONE;
+    deferredMagCalOffsetX_ = 0.0f;
+    deferredMagCalOffsetY_ = 0.0f;
+    deferredMagCalOffsetZ_ = 0.0f;
     RobotKinematics::reset(0, 0);
     SystemManager::requestTransition(SYS_STATE_IDLE);
 
     initialized_ = true;
 
 #ifdef DEBUG_TLV_PACKETS
-    DEBUG_SERIAL.println(F("[MessageCenter] Initialized (v2.0, batched TX)"));
+    DEBUG_LOG.println(F("[MessageCenter] Initialized (v2.0, batched TX)"));
 #endif
 }
 
@@ -129,25 +210,58 @@ void MessageCenter::beginFrame()
     resetDescriptor(&encodeDesc_);
 }
 
+bool MessageCenter::appendTlv(uint32_t tlvType, uint16_t tlvLen, const void *dataAddr)
+{
+    const size_t required = sizeof(struct TlvHeader) + tlvLen + (MSG_BUFFER_SEGMENT_LEN - 1U);
+    if (encodeDesc_.bufferIndex + required > encodeDesc_.bufferSize) {
+        return false;
+    }
+
+    addTlvPacket(&encodeDesc_, tlvType, tlvLen, dataAddr);
+    return true;
+}
+
 void MessageCenter::sendFrame()
 {
     // Only send if at least one TLV was appended
     if (encodeDesc_.frameHeader.numTlvs == 0)
         return;
 
+    if (txPendingOffset_ < txPendingLen_) {
+        txDroppedFrames_++;
+        return;
+    }
+
     int n = wrapupBuffer(&encodeDesc_);
     if (n > 0)
     {
-        RPI_SERIAL.write(txBuffer_, (size_t)n);
+        txPendingLen_ = (uint16_t)n;
+        txPendingOffset_ = 0;
+        txFramesWindow_++;
+        uint32_t txBytesSum = (uint32_t)txBytesWindow_ + (uint32_t)n;
+        txBytesWindow_ = (txBytesSum > 0xFFFFUL) ? 0xFFFFU : (uint16_t)txBytesSum;
+        drainTx();
     }
 
 #ifdef DEBUG_TLV_PACKETS
-    DEBUG_SERIAL.print(F("[TX] Frame: "));
-    DEBUG_SERIAL.print(encodeDesc_.frameHeader.numTlvs);
-    DEBUG_SERIAL.print(F(" TLVs, "));
-    DEBUG_SERIAL.print(n);
-    DEBUG_SERIAL.println(F(" bytes"));
+    DEBUG_LOG.print(F("[TX] Frame: "));
+    DEBUG_LOG.print(encodeDesc_.frameHeader.numTlvs);
+    DEBUG_LOG.print(F(" TLVs, "));
+    DEBUG_LOG.print(n);
+    DEBUG_LOG.println(F(" bytes"));
 #endif
+}
+
+void MessageCenter::drainTx()
+{
+    while (txPendingOffset_ < txPendingLen_ && bit_is_set(UCSR2A, UDRE2)) {
+        UDR2 = txBuffer_[txPendingOffset_++];
+    }
+
+    if (txPendingOffset_ >= txPendingLen_) {
+        txPendingLen_ = 0;
+        txPendingOffset_ = 0;
+    }
 }
 
 // ============================================================================
@@ -163,12 +277,12 @@ void MessageCenter::recordLoopTime(uint32_t elapsedUs) {
     else
         loopTimeAvgUs_ = (uint16_t)(((uint32_t)loopTimeAvgUs_ * 7 + clamped) >> 3);
 
-    // Per-window max: reset every 200 ticks (2 s at 100 Hz)
+    // Per-window max: reset every ~2 s of taskUART activity.
     if (elapsedUs > loopTimeMaxUs_)
         loopTimeMaxUs_ = (uint16_t)clamped;
 
     static uint8_t windowTick = 0;
-    if (++windowTick >= 200) {
+    if (++windowTick >= (uint8_t)(UART_COMMS_FREQ_HZ * 2U)) {
         windowTick    = 0;
         loopTimeMaxUs_ = 0;
     }
@@ -183,37 +297,195 @@ void MessageCenter::recordLoopTime(uint32_t elapsedUs) {
 // ----------------------------------------------------------------------------
 void MessageCenter::drainUart()
 {
-    // Rapidly move bytes from the 64-byte HW ring buffer into the 1024-byte
-    // software buffer.  At loop() rate (~67 kHz) the HW ring buffer never
-    // accumulates more than ~1 byte between drain calls, preventing overflow
-    // when the RPi sends back-to-back frames (heartbeat + command ≥ 96 bytes).
+    // Feed incoming bytes straight into the TLV decoder. This avoids carrying
+    // a second software FIFO in SRAM in addition to the decoder frame buffer.
     int b;
-    while (rxFill_ < RX_BUFFER_SIZE && (b = RPI_SERIAL.read()) >= 0)
-        rxBuffer_[rxFill_++] = (uint8_t)b;
+#ifdef DEBUG_UART_RX_BYTES
+    uint8_t rxBurst[16];
+    uint8_t rxBurstCount = 0;
+#endif
+    while ((b = RPI_SERIAL.read()) >= 0) {
+        uint8_t byte = (uint8_t)b;
+        lastRxByteMs_ = millis();
+        if (rxBytesWindow_ != 0xFFFFU) {
+            rxBytesWindow_++;
+        }
+#ifdef DEBUG_UART_RX_BYTES
+        rxBurst[rxBurstCount++] = byte;
+        if (rxBurstCount >= sizeof(rxBurst)) {
+            logRawRxBurst(rxBurst, rxBurstCount);
+            rxBurstCount = 0;
+        }
+#endif
+        decodePacket(&decodeDesc_, &byte);
+    }
+#ifdef DEBUG_UART_RX_BYTES
+    if (rxBurstCount > 0) {
+        logRawRxBurst(rxBurst, rxBurstCount);
+    }
+#endif
 }
 
 // ----------------------------------------------------------------------------
-// processIncoming — called from taskUART at 100 Hz
+// processIncoming — called from taskUART at 50 Hz
 // ----------------------------------------------------------------------------
 void MessageCenter::processIncoming()
 {
-    // Final drain: pick up any bytes that arrived since the last drainUart() call.
-    drainUart();
+    checkHeartbeatTimeout();
+}
 
-    // Decode all accumulated bytes, then reset the fill counter so the next
-    // drainUart() call starts filling from the beginning of rxBuffer_.
-    if (rxFill_ > 0)
-    {
-        decode(&decodeDesc_, rxBuffer_, rxFill_);
-        rxFill_ = 0;
+void MessageCenter::processDeferred()
+{
+    processDeferredMagCal();
+    processDeferredServo();
+}
+
+void MessageCenter::processDeferredServo()
+{
+    if (!servoHardwareDirty_ && servoPulseDirtyMask_ == 0 && servoOffDirtyMask_ == 0) {
+        return;
     }
 
-    checkHeartbeatTimeout();
+    if (!ServoController::isInitialized()) {
+        if (!servoUnavailableLogged_) {
+            DEBUG_LOG.println(F("[I2C] Servo controller unavailable."));
+            servoUnavailableLogged_ = true;
+        }
+        servoHardwareDirty_ = false;
+        servoPulseDirtyMask_ = 0;
+        servoOffDirtyMask_ = 0;
+        pendingServoStatus_ = true;
+        return;
+    }
+
+    servoUnavailableLogged_ = false;
+
+    servoHardwareDirty_ = false;
+
+    if (servoEnabledMask_ == 0) {
+        if (ServoController::isEnabled()) {
+            ServoController::disable();
+        }
+    } else if (!ServoController::isEnabled()) {
+        ServoController::enable();
+    }
+
+    uint16_t offMask = servoOffDirtyMask_;
+    servoOffDirtyMask_ = 0;
+    for (uint8_t channel = 0; channel < NUM_SERVO_CHANNELS; ++channel) {
+        if ((offMask & (uint16_t)(1u << channel)) != 0) {
+            ServoController::setChannelOff(channel);
+        }
+    }
+
+    uint16_t dirtyMask = servoPulseDirtyMask_;
+    servoPulseDirtyMask_ = 0;
+    uint8_t channel = 0;
+    while (channel < NUM_SERVO_CHANNELS) {
+        uint16_t bit = (uint16_t)(1u << channel);
+        if ((dirtyMask & bit) == 0 || (servoEnabledMask_ & bit) == 0) {
+            channel++;
+            continue;
+        }
+
+        uint8_t start = channel;
+        uint8_t count = 0;
+        while (channel < NUM_SERVO_CHANNELS && count < NUM_SERVO_CHANNELS) {
+            uint16_t runBit = (uint16_t)(1u << channel);
+            if ((dirtyMask & runBit) == 0 || (servoEnabledMask_ & runBit) == 0) {
+                break;
+            }
+            count++;
+            channel++;
+        }
+
+        if (count == 1U) {
+            ServoController::setPositionUs(start, servoPendingPulseUs_[start]);
+        } else {
+            ServoController::setMultiplePositionsUs(start, count, &servoPendingPulseUs_[start]);
+        }
+    }
+
+    if (ServoController::hasI2CError()) {
+        if (!servoI2CFaultLogged_) {
+            DEBUG_LOG.println(F("[I2C] Servo controller communication error."));
+            servoI2CFaultLogged_ = true;
+        }
+    } else {
+        servoI2CFaultLogged_ = false;
+    }
+
+    pendingServoStatus_ = true;
+}
+
+void MessageCenter::processDeferredMagCal()
+{
+    DeferredMagCalAction action = deferredMagCalAction_;
+    if (action == DEFER_MAG_NONE) {
+        return;
+    }
+
+    deferredMagCalAction_ = DEFER_MAG_NONE;
+
+    switch (action)
+    {
+    case DEFER_MAG_START:
+        SensorManager::startMagCalibration();
+        lastMagCalSendMs_ = 0;
+        break;
+    case DEFER_MAG_STOP:
+        SensorManager::cancelMagCalibration();
+        pendingMagCal_ = true;
+        break;
+    case DEFER_MAG_SAVE:
+        SensorManager::saveMagCalibration();
+        pendingMagCal_ = true;
+        break;
+    case DEFER_MAG_APPLY:
+        SensorManager::applyMagCalibration(
+            deferredMagCalOffsetX_, deferredMagCalOffsetY_, deferredMagCalOffsetZ_);
+        pendingMagCal_ = true;
+        break;
+    case DEFER_MAG_CLEAR:
+        SensorManager::clearMagCalibration();
+        pendingMagCal_ = true;
+        break;
+    default:
+        break;
+    }
+}
+
+void MessageCenter::snapshotTrafficWindow(uint16_t &rxBytes,
+                                          uint16_t &rxFrames,
+                                          uint16_t &rxTlvs,
+                                          uint16_t &rxHeartbeats,
+                                          uint16_t &txBytes,
+                                          uint16_t &txFrames)
+{
+    rxBytes = rxBytesWindow_;
+    rxFrames = rxFramesWindow_;
+    rxTlvs = rxTlvsWindow_;
+    rxHeartbeats = rxHeartbeatsWindow_;
+    txBytes = txBytesWindow_;
+    txFrames = txFramesWindow_;
+
+    rxBytesWindow_ = 0;
+    rxFramesWindow_ = 0;
+    rxTlvsWindow_ = 0;
+    rxHeartbeatsWindow_ = 0;
+    txBytesWindow_ = 0;
+    txFramesWindow_ = 0;
 }
 
 void MessageCenter::sendTelemetry()
 {
+    if (txPendingOffset_ < txPendingLen_) {
+        txDroppedFrames_++;
+        return;
+    }
+
     uint32_t currentMs = millis();
+    const uint8_t phase = (uint8_t)((currentMs / 20U) % 10U);
 
     SystemState state = SystemManager::getState();
     bool running = (state == SYS_STATE_RUNNING);
@@ -223,83 +495,98 @@ void MessageCenter::sendTelemetry()
     // Open a new frame; all send*() calls below append TLVs to it.
     beginFrame();
 
-    // ---- 100 Hz telemetry (RUNNING only) ----
+    // ---- System status first so the UI keeps receiving link/error state even
+    // when the bring-up TX budget forces lower-priority telemetry to drop. ----
+    uint32_t statusInterval = runningOrError ? TELEMETRY_SYS_STATUS_RUN_MS
+                                             : TELEMETRY_SYS_STATUS_IDLE_MS;
+    if (currentMs - lastStatusSendMs_ >= statusInterval && phase == 7U)
+    {
+        lastStatusSendMs_ = currentMs;
+        sendSystemStatus();
+    }
+
+    // ---- Power telemetry early so UI battery / servo rails do not get
+    // squeezed out by lower-priority RUNNING telemetry in the same frame. ----
+    if (currentMs - lastVoltageSendMs_ >= TELEMETRY_VOLTAGE_MS && phase == 9U)
+    {
+        lastVoltageSendMs_ = currentMs;
+        sendVoltageData();
+    }
+
+    // ---- Bring-up telemetry profile (RUNNING only) ----
     if (running)
     {
-        if (currentMs - lastDCStatusSendMs_ >= 20)    // 50 Hz (184 B) — every 2nd tick
+        if (pendingDCStatus_ ||
+            (currentMs - lastDCStatusSendMs_ >= TELEMETRY_DC_STATUS_MS && phase == 0U))
         {
             lastDCStatusSendMs_ = currentMs;
+            pendingDCStatus_ = false;
             sendDCStatusAll();
         }
 
-        if (currentMs - lastStepStatusSendMs_ >= 100) // 10 Hz (96 B) — every 10th tick
+        if (currentMs - lastStepStatusSendMs_ >= TELEMETRY_STEP_STATUS_MS && phase == 8U)
         {
             lastStepStatusSendMs_ = currentMs;
             sendStepStatusAll();
         }
 
-        if (currentMs - lastKinematicsSendMs_ >= 10)
+        if (currentMs - lastKinematicsSendMs_ >= TELEMETRY_KINEMATICS_MS && phase == 2U)
         {
             lastKinematicsSendMs_ = currentMs;
             sendSensorKinematics();
         }
 
-        if (currentMs - lastIOStatusSendMs_ >= 10)
+        if (currentMs - lastIOStatusSendMs_ >= TELEMETRY_IO_STATUS_MS && phase == 4U)
         {
             lastIOStatusSendMs_ = currentMs;
             sendIOStatus();
         }
 
         if (SensorManager::isIMUAvailable() &&
-            currentMs - lastIMUSendMs_ >= 10)
+            currentMs - lastIMUSendMs_ >= TELEMETRY_IMU_MS &&
+            phase == 6U)
         {
             lastIMUSendMs_ = currentMs;
             sendSensorIMU();
         }
 
-        // Lidar range at 50 Hz (each configured slot, found or not)
+        // Lidar range at 10 Hz (each configured slot, found or not)
         if (SensorManager::getLidarConfiguredCount() > 0 &&
-            currentMs - lastLidarSendMs_ >= 20)
+            currentMs - lastLidarSendMs_ >= TELEMETRY_LIDAR_MS &&
+            phase == 1U)
         {
             lastLidarSendMs_ = currentMs;
             sendSensorRange(true);
         }
 
-        // ---- 25 Hz telemetry — staggered from DC (40ms vs 20ms: lands between DC ticks)
-        if (currentMs - lastServoStatusSendMs_ >= 40)
-        {
-            lastServoStatusSendMs_ = currentMs;
-            sendServoStatusAll();
-        }
     }
 
-    // Ultrasonic range at 10 Hz (each configured slot, found or not)
+    // Servo status is needed in IDLE as well because the UI can enable and
+    // position servos outside RUNNING. Also push an immediate status refresh
+    // after servo commands so optimistic UI state is confirmed quickly.
+    if (state != SYS_STATE_INIT &&
+        (pendingServoStatus_ ||
+         (currentMs - lastServoStatusSendMs_ >= TELEMETRY_SERVO_STATUS_MS &&
+          phase == 5U)))
+    {
+        lastServoStatusSendMs_ = currentMs;
+        pendingServoStatus_ = false;
+        sendServoStatusAll();
+    }
+
+    // Ultrasonic range at 5 Hz (each configured slot, found or not)
     if (running && SensorManager::getUltrasonicConfiguredCount() > 0 &&
-        currentMs - lastUltrasonicSendMs_ >= 100)
+        currentMs - lastUltrasonicSendMs_ >= TELEMETRY_ULTRASONIC_MS &&
+        phase == 3U)
     {
         lastUltrasonicSendMs_ = currentMs;
         sendSensorRange(false);
     }
 
-    // ---- 10 Hz voltage (RUNNING or ERROR) ----
-    if (runningOrError && currentMs - lastVoltageSendMs_ >= 100)
-    {
-        lastVoltageSendMs_ = currentMs;
-        sendVoltageData();
-    }
-
-    // ---- System status: 10 Hz (RUNNING/ERROR), 1 Hz otherwise ----
-    uint32_t statusInterval = runningOrError ? 100UL : 1000UL;
-    if (currentMs - lastStatusSendMs_ >= statusInterval)
-    {
-        lastStatusSendMs_ = currentMs;
-        sendSystemStatus();
-    }
-
-    // ---- Mag cal status at 10 Hz while sampling ----
+    // ---- Mag cal status at 5 Hz while sampling ----
     if (SensorManager::getMagCalData().state == MAG_CAL_SAMPLING)
     {
-        if (currentMs - lastMagCalSendMs_ >= 100)
+        if (currentMs - lastMagCalSendMs_ >= 200 && phase == 1U)
         {
             lastMagCalSendMs_ = currentMs;
             sendMagCalStatus();
@@ -333,11 +620,13 @@ uint32_t MessageCenter::getTimeSinceHeartbeat()
 
 void MessageCenter::checkHeartbeatTimeout()
 {
-    // Only mark heartbeat invalid — SafetyManager::check() responds on next 100 Hz tick
     if (getTimeSinceHeartbeat() > (uint32_t)heartbeatTimeoutMs_)
     {
-        // DEBUG_SERIAL.print("getTimeSinceHeartbeat(): ");
-        // DEBUG_SERIAL.println(getTimeSinceHeartbeat());
+        if (heartbeatValid_) {
+            DebugLog::printf_P(PSTR("[hb] timeout age=%lu ms state=%u\n"),
+                               (unsigned long)getTimeSinceHeartbeat(),
+                               (unsigned)SystemManager::getState());
+        }
         heartbeatValid_ = false;
     }
 }
@@ -354,23 +643,46 @@ void MessageCenter::decodeCallback(enum DecodeErrorCode *error,
     if (*error != NoError)
     {
         uartRxErrors_++;
+        switch (*error)
+        {
+        case CrcError:
+            crcErrorCount_++;
+            break;
+        case TotalPacketLenError:
+        case BufferOutOfIndex:
+        case UnpackFrameHeaderError:
+            frameLenErrorCount_++;
+            break;
+        case TlvError:
+        case TlvLenError:
+            tlvErrorCount_++;
+            break;
+        default:
+            break;
+        }
 #ifdef DEBUG_TLV_PACKETS
-        DEBUG_SERIAL.print(F("[RX] Decode error: "));
-        DEBUG_SERIAL.println(*error);
+        DEBUG_LOG.print(F("[RX] Decode error: "));
+        DEBUG_LOG.println((unsigned)*error);
 #endif
         return;
     }
 
     // Route every TLV in the frame — supports multi-TLV incoming frames
+    if (rxFramesWindow_ != 0xFFFFU) {
+        rxFramesWindow_++;
+    }
+    uint32_t rxTlvsSum = (uint32_t)rxTlvsWindow_ + frameHeader->numTlvs;
+    rxTlvsWindow_ = (rxTlvsSum > 0xFFFFUL) ? 0xFFFFU : (uint16_t)rxTlvsSum;
     for (uint32_t i = 0; i < frameHeader->numTlvs; i++)
     {
         uint32_t length = tlvHeaders[i].tlvLen;
         if (length > MAX_TLV_PAYLOAD_SIZE)
         {
             uartRxErrors_++;
+            oversizeErrorCount_++;
 #ifdef DEBUG_TLV_PACKETS
-            DEBUG_SERIAL.print(F("[RX] Oversized payload, type="));
-            DEBUG_SERIAL.println(tlvHeaders[i].tlvType);
+            DEBUG_LOG.print(F("[RX] Oversized payload, type="));
+            DEBUG_LOG.println(tlvHeaders[i].tlvType);
 #endif
             continue;
         }
@@ -378,10 +690,10 @@ void MessageCenter::decodeCallback(enum DecodeErrorCode *error,
         routeMessage(tlvHeaders[i].tlvType, tlvData[i], length);
 
 #ifdef DEBUG_TLV_PACKETS
-        DEBUG_SERIAL.print(F("[RX] Type: "));
-        DEBUG_SERIAL.print(tlvHeaders[i].tlvType);
-        DEBUG_SERIAL.print(F(", Len: "));
-        DEBUG_SERIAL.println(length);
+        DEBUG_LOG.print(F("[RX] Type: "));
+        DEBUG_LOG.print(tlvHeaders[i].tlvType);
+        DEBUG_LOG.print(F(", Len: "));
+        DEBUG_LOG.println(length);
 #endif
     }
 }
@@ -393,12 +705,19 @@ void MessageCenter::decodeCallback(enum DecodeErrorCode *error,
 void MessageCenter::routeMessage(uint32_t type, const uint8_t *payload, uint32_t length)
 {
     // Any received TLV resets the liveness timer
-    lastHeartbeatMs_ = millis();
+    bool wasHeartbeatValid = heartbeatValid_;
+    uint32_t previousAgeMs = getTimeSinceHeartbeat();
+    uint32_t nowMs = millis();
+    lastHeartbeatMs_ = nowMs;
     heartbeatValid_ = true;
+    if (!wasHeartbeatValid) {
+        DebugLog::printf_P(PSTR("[hb] restored age=%lu ms\n"),
+                           (unsigned long)previousAgeMs);
+    }
     // Non-heartbeat commands update the command timer
     if (type != SYS_HEARTBEAT)
     {
-        lastCmdMs_ = millis();
+        lastCmdMs_ = nowMs;
     }
 
     // ---- State-based command gating ----
@@ -415,6 +734,9 @@ void MessageCenter::routeMessage(uint32_t type, const uint8_t *payload, uint32_t
     {
     // ---- System messages (always accepted) ----
     case SYS_HEARTBEAT:
+        if (rxHeartbeatsWindow_ != 0xFFFFU) {
+            rxHeartbeatsWindow_++;
+        }
         if (length == sizeof(PayloadHeartbeat))
             handleHeartbeat((const PayloadHeartbeat *)payload);
         break;
@@ -489,13 +811,7 @@ void MessageCenter::routeMessage(uint32_t type, const uint8_t *payload, uint32_t
         }
         else if (length == sizeof(PayloadServoSetBulk))
         {
-            // Bulk servo update
-            const PayloadServoSetBulk *b = (const PayloadServoSetBulk *)payload;
-            if ((uint16_t)b->startChannel + b->count <= NUM_SERVO_CHANNELS)
-            {
-                ServoController::setMultiplePositionsUs(
-                    b->startChannel, b->count, b->pulseUs);
-            }
+            handleServoSetBulk((const PayloadServoSetBulk *)payload);
         }
         break;
 
@@ -518,8 +834,8 @@ void MessageCenter::routeMessage(uint32_t type, const uint8_t *payload, uint32_t
 
     default:
 #ifdef DEBUG_TLV_PACKETS
-        DEBUG_SERIAL.print(F("[RX] Unknown type: "));
-        DEBUG_SERIAL.println(type);
+        DEBUG_LOG.print(F("[RX] Unknown type: "));
+        DEBUG_LOG.println(type);
 #endif
         break;
     }
@@ -534,8 +850,8 @@ void MessageCenter::handleHeartbeat(const PayloadHeartbeat *payload)
     // Liveness timer already updated in routeMessage()
     (void)payload;
 #ifdef DEBUG_TLV_PACKETS
-    DEBUG_SERIAL.print(F("[RX] Heartbeat ts="));
-    DEBUG_SERIAL.println(payload->timestamp);
+    DEBUG_LOG.print(F("[RX] Heartbeat ts="));
+    DEBUG_LOG.println(payload->timestamp);
 #endif
 }
 
@@ -546,12 +862,12 @@ void MessageCenter::handleSysCmd(const PayloadSysCmd *payload)
     case SYS_CMD_START:
         if (SystemManager::requestTransition(SYS_STATE_RUNNING))
         {
-            DEBUG_SERIAL.println(F("[SYS] CMD_START → RUNNING OK"));
+            DebugLog::writeFlashLine(F("[SYS] CMD_START -> RUNNING OK"));
         }
         else
         {
-            DEBUG_SERIAL.print(F("[SYS] CMD_START REJECTED — state="));
-            DEBUG_SERIAL.println(static_cast<uint8_t>(SystemManager::getState()));
+            DebugLog::printf_P(PSTR("[SYS] CMD_START rejected state=%u\n"),
+                               (unsigned)SystemManager::getState());
         }
         break;
 
@@ -559,7 +875,9 @@ void MessageCenter::handleSysCmd(const PayloadSysCmd *payload)
         if (SystemManager::requestTransition(SYS_STATE_IDLE))
         {
             disableAllActuators();
-            DEBUG_SERIAL.println(F("[SYS] CMD_STOP → IDLE"));
+            deferredMagCalAction_ = DEFER_MAG_NONE;
+            pendingMagCal_ = false;
+            DebugLog::writeFlashLine(F("[SYS] CMD_STOP -> IDLE"));
         }
         break;
 
@@ -567,25 +885,30 @@ void MessageCenter::handleSysCmd(const PayloadSysCmd *payload)
         if (SystemManager::requestTransition(SYS_STATE_IDLE))
         {
             disableAllActuators();
+            deferredMagCalAction_ = DEFER_MAG_NONE;
+            pendingMagCal_ = false;
             faultLatchFlags_ = 0;   // clear after successful reset so UI shows clean state
-            DEBUG_SERIAL.println(F("[SYS] CMD_RESET → IDLE"));
+            LoopMonitor::clearFaults();
+            DebugLog::writeFlashLine(F("[SYS] CMD_RESET -> IDLE"));
         }
         else
         {
-            DEBUG_SERIAL.print(F("[SYS] CMD_RESET REJECTED — state="));
-            DEBUG_SERIAL.println(static_cast<uint8_t>(SystemManager::getState()));
+            DebugLog::printf_P(PSTR("[SYS] CMD_RESET rejected state=%u\n"),
+                               (unsigned)SystemManager::getState());
         }
         break;
 
     case SYS_CMD_ESTOP:
         disableAllActuators();
+        deferredMagCalAction_ = DEFER_MAG_NONE;
+        pendingMagCal_ = false;
         SystemManager::requestTransition(SYS_STATE_ESTOP);
-        DEBUG_SERIAL.println(F("[SYS] CMD_ESTOP → ESTOP"));
+        DebugLog::writeFlashLine(F("[SYS] CMD_ESTOP -> ESTOP"));
         break;
 
     default:
-        DEBUG_SERIAL.print(F("[SYS] unknown command="));
-        DEBUG_SERIAL.println(payload->command);
+        DebugLog::printf_P(PSTR("[SYS] unknown command=%u\n"),
+                           (unsigned)payload->command);
         break;
     }
 }
@@ -645,15 +968,23 @@ void MessageCenter::handleDCEnable(const PayloadDCEnable *payload)
     if (payload->mode == DC_MODE_DISABLED)
     {
         motor.disable();   // disable always allowed regardless of state
+        pendingDCStatus_ = true;
     }
     else
     {
         // Enable only permitted in IDLE or RUNNING — block in ERROR / ESTOP / INIT
         SystemState s = SystemManager::getState();
-        if (s != SYS_STATE_IDLE && s != SYS_STATE_RUNNING) return;
+        if (s != SYS_STATE_IDLE && s != SYS_STATE_RUNNING) {
+            DEBUG_LOG.println(F("[DC] Enable rejected: invalid state."));
+            return;
+        }
         // Silently block when no battery present — see VBAT_MIN_PRESENT_V in config.h
-        if (!SensorManager::isBatteryPresent()) return;
+        if (!SensorManager::isBatteryPresent()) {
+            DEBUG_LOG.println(F("[DC] Enable rejected: battery not present."));
+            return;
+        }
         motor.enable((DCMotorMode)payload->mode);
+        pendingDCStatus_ = true;
     }
 }
 
@@ -670,6 +1001,7 @@ void MessageCenter::handleDCSetPosition(const PayloadDCSetPosition *payload)
         motor.enable(DC_MODE_POSITION);
 
     motor.setTargetPosition(payload->targetTicks);
+    pendingDCStatus_ = true;
 }
 
 void MessageCenter::handleDCSetVelocity(const PayloadDCSetVelocity *payload)
@@ -683,6 +1015,7 @@ void MessageCenter::handleDCSetVelocity(const PayloadDCSetVelocity *payload)
         motor.enable(DC_MODE_VELOCITY);
 
     motor.setTargetVelocity((float)payload->targetTicks);
+    pendingDCStatus_ = true;
 }
 
 void MessageCenter::handleDCSetPWM(const PayloadDCSetPWM *payload)
@@ -696,6 +1029,7 @@ void MessageCenter::handleDCSetPWM(const PayloadDCSetPWM *payload)
         motor.enable(DC_MODE_PWM);
 
     motor.setDirectPWM(payload->pwm);
+    pendingDCStatus_ = true;
 }
 
 // ============================================================================
@@ -770,39 +1104,53 @@ void MessageCenter::handleStepHome(const PayloadStepHome *payload)
 
 void MessageCenter::handleServoEnable(const PayloadServoEnable *payload)
 {
-    // Enable only permitted in IDLE or RUNNING; disable always allowed
+    // Enable only permitted in RUNNING; disable always allowed
     SystemState st = SystemManager::getState();
-    bool canEnable = (st == SYS_STATE_IDLE || st == SYS_STATE_RUNNING) &&
-                     SensorManager::isBatteryPresent();
+    bool stateOk = (st == SYS_STATE_RUNNING);
+    bool powerOk = SensorManager::isBatteryPresent() || SensorManager::isServoRailPresent();
+    bool canEnable = stateOk && powerOk;
 
     if (payload->channel == 0xFF)
     {
         // All channels
         if (payload->enable)
         {
-            if (!canEnable) return;
+            if (!canEnable) {
+                DEBUG_LOG.println(F("[SERVO] Enable rejected: no actuator power or invalid state."));
+                return;
+            }
             servoEnabledMask_ = 0xFFFF;
-            ServoController::enable();
+            servoHardwareDirty_ = true;
+            pendingServoStatus_ = true;
         }
         else
         {
             servoEnabledMask_ = 0;
-            ServoController::disable();
+            servoHardwareDirty_ = true;
+            servoOffDirtyMask_ = 0xFFFF;
+            pendingServoStatus_ = true;
         }
     }
     else if (payload->channel < NUM_SERVO_CHANNELS)
     {
+        uint16_t bit = (uint16_t)(1u << payload->channel);
         if (payload->enable)
         {
-            if (!canEnable) return;
-            servoEnabledMask_ |= (uint16_t)(1u << payload->channel);
-            if (!ServoController::isEnabled())
-                ServoController::enable();
+            if (!canEnable) {
+                DEBUG_LOG.println(F("[SERVO] Enable rejected: no actuator power or invalid state."));
+                return;
+            }
+            servoEnabledMask_ |= bit;
+            servoHardwareDirty_ = true;
+            pendingServoStatus_ = true;
         }
         else
         {
-            servoEnabledMask_ &= (uint16_t)~(1u << payload->channel);
-            ServoController::setChannelOff(payload->channel);
+            servoEnabledMask_ &= (uint16_t)~bit;
+            servoHardwareDirty_ = true;
+            servoOffDirtyMask_ |= bit;
+            servoPulseDirtyMask_ &= (uint16_t)~bit;
+            pendingServoStatus_ = true;
         }
     }
 }
@@ -812,7 +1160,29 @@ void MessageCenter::handleServoSet(const PayloadServoSetSingle *payload)
     if (payload->channel >= NUM_SERVO_CHANNELS)
         return;
 
-    ServoController::setPositionUs(payload->channel, payload->pulseUs);
+    uint16_t bit = (uint16_t)(1u << payload->channel);
+    servoPendingPulseUs_[payload->channel] = payload->pulseUs;
+    servoPulseDirtyMask_ |= bit;
+    pendingServoStatus_ = true;
+}
+
+void MessageCenter::handleServoSetBulk(const PayloadServoSetBulk *payload)
+{
+    if (payload->startChannel >= NUM_SERVO_CHANNELS || payload->count == 0) {
+        return;
+    }
+
+    uint8_t count = payload->count;
+    if ((uint16_t)payload->startChannel + count > NUM_SERVO_CHANNELS) {
+        count = (uint8_t)(NUM_SERVO_CHANNELS - payload->startChannel);
+    }
+
+    for (uint8_t i = 0; i < count; ++i) {
+        uint8_t channel = (uint8_t)(payload->startChannel + i);
+        servoPendingPulseUs_[channel] = payload->pulseUs[i];
+        servoPulseDirtyMask_ |= (uint16_t)(1u << channel);
+    }
+    pendingServoStatus_ = true;
 }
 
 // ============================================================================
@@ -853,29 +1223,26 @@ void MessageCenter::handleMagCalCmd(const PayloadMagCalCmd *payload)
     switch ((MagCalCmdType)payload->command)
     {
     case MAG_CAL_START:
-        SensorManager::startMagCalibration();
-        lastMagCalSendMs_ = 0; // Force immediate first status send
+        deferredMagCalAction_ = DEFER_MAG_START;
         break;
 
     case MAG_CAL_STOP:
-        SensorManager::cancelMagCalibration();
-        pendingMagCal_ = true; // Queue final status for next telemetry frame
+        deferredMagCalAction_ = DEFER_MAG_STOP;
         break;
 
     case MAG_CAL_SAVE:
-        SensorManager::saveMagCalibration();
-        pendingMagCal_ = true;
+        deferredMagCalAction_ = DEFER_MAG_SAVE;
         break;
 
     case MAG_CAL_APPLY:
-        SensorManager::applyMagCalibration(
-            payload->offsetX, payload->offsetY, payload->offsetZ);
-        pendingMagCal_ = true;
+        deferredMagCalOffsetX_ = payload->offsetX;
+        deferredMagCalOffsetY_ = payload->offsetY;
+        deferredMagCalOffsetZ_ = payload->offsetZ;
+        deferredMagCalAction_ = DEFER_MAG_APPLY;
         break;
 
     case MAG_CAL_CLEAR:
-        SensorManager::clearMagCalibration();
-        pendingMagCal_ = true;
+        deferredMagCalAction_ = DEFER_MAG_CLEAR;
         break;
 
     default:
@@ -912,7 +1279,7 @@ void MessageCenter::sendDCStatusAll()
         s.velKd = dcMotors[i].getVelKd();
     }
 
-    addTlvPacket(&encodeDesc_, DC_STATUS_ALL, sizeof(payload), &payload);
+    appendTlv(DC_STATUS_ALL, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendStepStatusAll()
@@ -935,7 +1302,7 @@ void MessageCenter::sendStepStatusAll()
         s.acceleration = sm->getAcceleration();
     }
 
-    addTlvPacket(&encodeDesc_, STEP_STATUS_ALL, sizeof(payload), &payload);
+    appendTlv(STEP_STATUS_ALL, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendServoStatusAll()
@@ -958,7 +1325,7 @@ void MessageCenter::sendServoStatusAll()
         }
     }
 
-    addTlvPacket(&encodeDesc_, SERVO_STATUS_ALL, sizeof(payload), &payload);
+    appendTlv(SERVO_STATUS_ALL, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendSensorIMU()
@@ -987,14 +1354,14 @@ void MessageCenter::sendSensorIMU()
     payload.reserved = 0;
     payload.timestamp = micros();
 
-    addTlvPacket(&encodeDesc_, SENSOR_IMU, sizeof(payload), &payload);
+    appendTlv(SENSOR_IMU, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendSensorRange(bool lidarOnly)
 {
     if (lidarOnly)
     {
-        // Lidar sensors (50 Hz path)
+        // Lidar sensors (10 Hz path)
         for (uint8_t i = 0; i < SensorManager::getLidarConfiguredCount(); i++)
         {
             PayloadSensorRange p;
@@ -1013,7 +1380,8 @@ void MessageCenter::sendSensorRange(bool lidarOnly)
                 p.status = 3; // not installed
                 p.distanceMm = 0;
             }
-            addTlvPacket(&encodeDesc_, SENSOR_RANGE, sizeof(p), &p);
+            if (!appendTlv(SENSOR_RANGE, sizeof(p), &p))
+                break;
         }
     }
     else
@@ -1037,7 +1405,8 @@ void MessageCenter::sendSensorRange(bool lidarOnly)
                 p.status = 3; // not installed
                 p.distanceMm = 0;
             }
-            addTlvPacket(&encodeDesc_, SENSOR_RANGE, sizeof(p), &p);
+            if (!appendTlv(SENSOR_RANGE, sizeof(p), &p))
+                break;
         }
     }
 }
@@ -1059,7 +1428,7 @@ void MessageCenter::sendSensorKinematics()
     payload.vTheta = RobotKinematics::getVTheta();
     payload.timestamp = micros();
 
-    addTlvPacket(&encodeDesc_, SENSOR_KINEMATICS, sizeof(payload), &payload);
+    appendTlv(SENSOR_KINEMATICS, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendVoltageData()
@@ -1071,7 +1440,7 @@ void MessageCenter::sendVoltageData()
     payload.servoRailMv = (uint16_t)(SensorManager::getServoVoltage() * 1000.0f);
     payload.reserved = 0;
 
-    addTlvPacket(&encodeDesc_, SENSOR_VOLTAGE, sizeof(payload), &payload);
+    appendTlv(SENSOR_VOLTAGE, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendIOStatus()
@@ -1093,7 +1462,7 @@ void MessageCenter::sendIOStatus()
     if (sendLen > sizeof(buf))
         sendLen = sizeof(buf);
 
-    addTlvPacket(&encodeDesc_, IO_STATUS, sendLen, buf);
+    appendTlv(IO_STATUS, sendLen, buf);
 }
 
 void MessageCenter::sendSystemStatus()
@@ -1126,6 +1495,8 @@ void MessageCenter::sendSystemStatus()
     if (!SensorManager::isIMUAvailable())
         payload.errorFlags |= ERR_IMU_ERROR;
 #endif
+    if (LoopMonitor::getFaultMask() != 0)
+        payload.errorFlags |= ERR_LOOP_OVERRUN;
     // Per-motor encoder stall: any failed motor sets the shared flag
     for (uint8_t i = 0; i < NUM_DC_MOTORS; i++) {
         if (dcMotors[i].isEncoderFailed()) {
@@ -1133,7 +1504,6 @@ void MessageCenter::sendSystemStatus()
             break;
         }
     }
-
     // Attached sensors bitmask: bit0=IMU, bit1=Lidar, bit2=Ultrasonic
     if (SensorManager::isIMUAvailable())
         payload.attachedSensors |= 0x01;
@@ -1154,7 +1524,7 @@ void MessageCenter::sendSystemStatus()
     // 0xFF = no home limit GPIO configured for this stepper
     memset(payload.stepperHomeLimitGpio, 0xFF, sizeof(payload.stepperHomeLimitGpio));
 
-    addTlvPacket(&encodeDesc_, SYS_STATUS, sizeof(payload), &payload);
+    appendTlv(SYS_STATUS, sizeof(payload), &payload);
 }
 
 void MessageCenter::sendMagCalStatus()
@@ -1177,7 +1547,7 @@ void MessageCenter::sendMagCalStatus()
     payload.savedToEeprom = cal.savedToEeprom ? 1 : 0;
     memset(payload.reserved2, 0, sizeof(payload.reserved2));
 
-    addTlvPacket(&encodeDesc_, SENSOR_MAG_CAL_STATUS, sizeof(payload), &payload);
+    appendTlv(SENSOR_MAG_CAL_STATUS, sizeof(payload), &payload);
 }
 
 // ============================================================================
@@ -1191,9 +1561,16 @@ void MessageCenter::disableAllActuators()
         if (dcMotors[i].isEnabled())
             dcMotors[i].disable();
     }
+    pendingDCStatus_ = true;
     StepperManager::emergencyStopAll();
     ServoController::disable();
     servoEnabledMask_ = 0;
+    servoHardwareDirty_ = false;
+    servoPulseDirtyMask_ = 0;
+    servoOffDirtyMask_ = 0;
+    pendingServoStatus_ = true;
+    servoUnavailableLogged_ = false;
+    servoI2CFaultLogged_ = false;
 }
 
 void MessageCenter::latchFaultFlags(uint8_t flags)

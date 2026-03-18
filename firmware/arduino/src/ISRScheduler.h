@@ -6,20 +6,13 @@
  * real-time ISRs. The ISR bodies themselves live in the files that own their
  * data:
  *
- *   TIMER1_OVF_vect  (200 Hz) — arduino.ino
- *     Always runs DC motor PID (200 Hz).
- *     Runs UART communication every other tick (100 Hz).
- *     Checks heartbeat timeout at 100 Hz; disables actuators if expired.
- *
- *   TIMER4_OVF_vect  (100 Hz, from a /100 counter inside 10 kHz carrier)
- *                    — SensorManager.cpp
- *     Calls SensorManager::isrTick() which dispatches:
- *       update100Hz() — IMU + Fusion AHRS
- *       update50Hz()  — Lidar
- *       update10Hz()  — Voltages + Ultrasonic
- *
- *   TIMER3_OVF_vect  (10 kHz) — StepperManager.cpp
+ *   TIMER3_OVF_vect  (10 kHz) — arduino.ino → StepperManager::timerISR()
  *     Generates stepper pulses for all stepper channels.
+ *
+ * Timer1 runs a short round-robin DC slot ISR in the mixed-control profile.
+ * Timer4 still has no overflow ISR and remains in Fast PWM mode so OC outputs
+ * work, while the heavier DC compute, sensor I2C/ADC dispatch, and UART
+ * handling all run from the soft scheduler.
  *
  * Timer hardware configuration:
  *
@@ -62,10 +55,11 @@
 class ISRScheduler {
 public:
     /**
-     * @brief Configure Timer1 and Timer4 for hard real-time ISR dispatch.
+     * @brief Configure Timer1 for the short round-robin DC slot and Timer4 for PWM only.
      *
-     * Timer3 is configured separately by StepperManager::init() (it also
-     * needs to connect OC3A based on the revision's OCR flags in pins.h).
+     * Timer3 is configured separately by StepperManager::init() and uses its
+     * overflow vector from arduino.ino. Timer4 overflow interrupts stay
+     * disabled in the mixed-control profile.
      *
      * Must be called LAST in setup().
      */

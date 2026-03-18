@@ -6,8 +6,8 @@
  * coordinates multiple stepper motors operating simultaneously.
  *
  * Timer3 Configuration:
- * - 10kHz interrupt rate (100µs period)
- * - CTC mode with OCR3A for precise timing
+ * - 10kHz overflow interrupt rate (100µs period)
+ * - Fast PWM mode 14 with ICR3 as TOP
  * - ISR calls timerCallback() on each enabled stepper
  *
  * Timing Budget:
@@ -58,7 +58,7 @@ public:
     /**
      * @brief Initialize Timer3 and stepper instances
      *
-     * Configures Timer3 for 10kHz CTC mode interrupt.
+     * Configures Timer3 for 10kHz overflow interrupt in Fast PWM mode 14.
      * Creates stepper motor instances (not enabled by default).
      *
      * Must be called once in setup() before using steppers.
@@ -76,7 +76,7 @@ public:
     /**
      * @brief Timer3 ISR handler
      *
-     * Called from Timer3 compare match ISR at 10kHz.
+     * Called from Timer3 overflow ISR at 10kHz.
      * Iterates through all enabled steppers and calls timerCallback().
      *
      * CRITICAL: Must complete in <50µs for reliable operation.
@@ -116,7 +116,6 @@ private:
 // TIMER3 ISR DECLARATION
 // ============================================================================
 
-// The actual ISR is defined in the .cpp file
-// ISR(TIMER3_COMPA_vect) { StepperManager::timerISR(); }
+// The TIMER3_OVF_vect wrapper lives in arduino.ino.
 
 #endif // STEPPERMANAGER_H

@@ -113,8 +113,9 @@ void resetDecodeDescriptor(struct TlvDecodeDescriptor *descriptor);
 // utility functions
 // magic num
 extern uint8_t FRAME_HEADER_MAGIC_NUM[8];
-extern size_t MAX_TLVS; // max number of TLVs in a frame
 #define MSG_BUFFER_SEGMENT_LEN 8 // length of the message buffer segment
+#define TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(frameBytes) \
+	(((frameBytes) > sizeof(struct FrameHeader)) ? (((frameBytes) - sizeof(struct FrameHeader)) / sizeof(struct TlvHeader)) : 0U)
 
 // CRC32
 #define CRC32_BYTES2IGNORE 16 // first 16 bytes of header

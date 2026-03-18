@@ -15,6 +15,10 @@ EncoderCounter2x::EncoderCounter2x()
     , invertDir_(false)
     , pinA_(0)
     , pinB_(0)
+    , pinAInReg_(nullptr)
+    , pinBInReg_(nullptr)
+    , pinAMask_(0)
+    , pinBMask_(0)
 {
 }
 
@@ -28,9 +32,14 @@ void EncoderCounter2x::init(uint8_t pinA, uint8_t pinB, bool invertDir) {
     pinMode(pinA_, INPUT_PULLUP);
     pinMode(pinB_, INPUT_PULLUP);
 
+    pinAInReg_ = portInputRegister(digitalPinToPort(pinA_));
+    pinBInReg_ = portInputRegister(digitalPinToPort(pinB_));
+    pinAMask_ = digitalPinToBitMask(pinA_);
+    pinBMask_ = digitalPinToBitMask(pinB_);
+
     // Reset state
     count_ = 0;
-    lastEdgeUs_ = micros();
+    lastEdgeUs_ = 0;
 }
 
 int32_t EncoderCounter2x::getCount() const {
@@ -67,8 +76,8 @@ void EncoderCounter2x::onInterruptA() {
     //   A=0, B=0 → count--  (A falling when B low)
     //   A=1, B=1 → count--  (A rising when B high)
 
-    uint8_t a = digitalRead(pinA_);
-    uint8_t b = digitalRead(pinB_);
+    uint8_t a = (pinAInReg_ && ((*pinAInReg_ & pinAMask_) != 0U)) ? 1U : 0U;
+    uint8_t b = (pinBInReg_ && ((*pinBInReg_ & pinBMask_) != 0U)) ? 1U : 0U;
 
     // Determine direction: A^B gives forward direction
     bool forward = (a ^ b);
@@ -76,7 +85,6 @@ void EncoderCounter2x::onInterruptA() {
     // Apply direction with inversion flag
     count_ += invertDir_ ? (forward ? -1 : 1) : (forward ? 1 : -1);
 
-    lastEdgeUs_ = micros();
 }
 
 void EncoderCounter2x::onInterruptB() {
@@ -102,6 +110,10 @@ EncoderCounter4x::EncoderCounter4x()
     , invertDir_(false)
     , pinA_(0)
     , pinB_(0)
+    , pinAInReg_(nullptr)
+    , pinBInReg_(nullptr)
+    , pinAMask_(0)
+    , pinBMask_(0)
 {
 }
 
@@ -115,14 +127,19 @@ void EncoderCounter4x::init(uint8_t pinA, uint8_t pinB, bool invertDir) {
     pinMode(pinA_, INPUT_PULLUP);
     pinMode(pinB_, INPUT_PULLUP);
 
+    pinAInReg_ = portInputRegister(digitalPinToPort(pinA_));
+    pinBInReg_ = portInputRegister(digitalPinToPort(pinB_));
+    pinAMask_ = digitalPinToBitMask(pinA_);
+    pinBMask_ = digitalPinToBitMask(pinB_);
+
     // Read initial state
-    uint8_t a = digitalRead(pinA_);
-    uint8_t b = digitalRead(pinB_);
+    uint8_t a = (pinAInReg_ && ((*pinAInReg_ & pinAMask_) != 0U)) ? 1U : 0U;
+    uint8_t b = (pinBInReg_ && ((*pinBInReg_ & pinBMask_) != 0U)) ? 1U : 0U;
     prevState_ = (a << 1) | b;
 
     // Reset counters
     count_ = 0;
-    lastEdgeUs_ = micros();
+    lastEdgeUs_ = 0;
 }
 
 int32_t EncoderCounter4x::getCount() const {
@@ -167,8 +184,8 @@ void EncoderCounter4x::processEdge() {
     //   Encoding: (prevState << 2) | currState
     //   Valid transitions: 0=no change, +1=forward, -1=reverse
 
-    uint8_t a = digitalRead(pinA_);
-    uint8_t b = digitalRead(pinB_);
+    uint8_t a = (pinAInReg_ && ((*pinAInReg_ & pinAMask_) != 0U)) ? 1U : 0U;
+    uint8_t b = (pinBInReg_ && ((*pinBInReg_ & pinBMask_) != 0U)) ? 1U : 0U;
     uint8_t currState = (a << 1) | b;
 
     // Lookup table indexed by (prevState << 2) | currState
@@ -199,7 +216,6 @@ void EncoderCounter4x::processEdge() {
     count_ += invertDir_ ? -delta : delta;
 
     prevState_ = currState;
-    lastEdgeUs_ = micros();
 }
 
 uint32_t EncoderCounter4x::getLastEdgeUs() const {

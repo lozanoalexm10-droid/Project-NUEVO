@@ -232,6 +232,14 @@
 #define PIN_M2_EN_OCR    OCR4B          // Write motor speed here instead of analogWrite()
 #define PIN_M2_EN_ICR    ICR4           // Same timer as M1_EN — ICR4 is shared TOP
 
+// Motor 3 EN (pin 9) — Timer2 OC2B
+#define PIN_M3_EN_IS_OC2B               // Timer2 OC2B connected to pin 9 (M3_EN)
+#define PIN_M3_EN_OCR    OCR2B          // Timer2 is 8-bit fast PWM; write duty directly
+
+// Motor 4 EN (pin 10) — Timer2 OC2A
+#define PIN_M4_EN_IS_OC2A               // Timer2 OC2A connected to pin 10 (M4_EN)
+#define PIN_M4_EN_OCR    OCR2A          // Timer2 is 8-bit fast PWM; write duty directly
+
 // ============================================================================
 // CONVENIENCE ARRAYS FOR ITERATION
 // ============================================================================

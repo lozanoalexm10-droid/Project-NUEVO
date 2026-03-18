@@ -59,7 +59,7 @@ enum SystemErrorFlags : uint8_t {
     ERR_I2C_ERROR      = 0x08,  // I2C bus error (PCA9685 or IMU)
     ERR_IMU_ERROR      = 0x10,  // IMU specifically not responding
     ERR_LIVENESS_LOST  = 0x20,  // Host heartbeat lost while RUNNING → motors cut
-    // 0x40 reserved
+    ERR_LOOP_OVERRUN   = 0x40,  // Any ISR/task exceeded its timing budget (see LoopMonitor)
 };
 
 /**
@@ -228,7 +228,7 @@ struct DCMotorStatus {
 /**
  * @brief DC motor status for all motors (Arduino → RPi) — TLV type DC_STATUS_ALL (260)
  *
- * Rate: 100 Hz in RUNNING state.
+ * Rate: 25 Hz in RUNNING state.
  */
 struct PayloadDCStatusAll {
     DCMotorStatus motors[4];    // Motors 0–3 in order
@@ -325,7 +325,7 @@ struct StepperStatus {
 /**
  * @brief Stepper status for all steppers (Arduino → RPi) — TLV type STEP_STATUS_ALL (516)
  *
- * Rate: 100 Hz in RUNNING state.
+ * Rate: 5 Hz in RUNNING state.
  */
 struct PayloadStepStatusAll {
     StepperStatus steppers[4];  // Steppers 0–3 in order
@@ -375,7 +375,7 @@ struct PayloadServoSetBulk {
 /**
  * @brief Servo status all channels (Arduino → RPi) — TLV type SERVO_STATUS_ALL (770)
  *
- * Rate: 50 Hz in RUNNING state. Reports commanded state only (no feedback).
+ * Rate: 5 Hz in RUNNING state. Reports commanded state only (no feedback).
  */
 struct PayloadServoStatusAll {
     uint8_t  pca9685Connected;  // 0 = not detected on I2C, 1 = connected
@@ -392,7 +392,7 @@ struct PayloadServoStatusAll {
 /**
  * @brief IMU sensor data (Arduino → RPi) — TLV type SENSOR_IMU (1024)
  *
- * Rate: 100 Hz in RUNNING state (if IMU attached).
+ * Rate: 25 Hz in RUNNING state (if IMU attached).
  * Quaternion and earth-frame acceleration from Fusion AHRS (Madgwick).
  * In 9-DOF mode (mag calibrated) yaw is north-referenced; 6-DOF = yaw drifts.
  */
@@ -422,8 +422,8 @@ struct PayloadSensorIMU {
 /**
  * @brief Robot kinematics from wheel odometry (Arduino → RPi) — TLV type SENSOR_KINEMATICS (1025)
  *
- * Rate: 100 Hz in RUNNING state.
- * Computed from encoder counts, wheelDiameterMm, wheelBaseMm.
+ * Rate: 25 Hz in RUNNING state.
+ * Computed from encoder counts and the compile-time wheel geometry constants.
  * Resets to (0, 0, 0) on firmware reset or SYS_CONFIG(resetOdometry=1).
  */
 struct PayloadSensorKinematics {
@@ -440,7 +440,7 @@ struct PayloadSensorKinematics {
 /**
  * @brief Battery and rail voltages (Arduino → RPi) — TLV type SENSOR_VOLTAGE (1026)
  *
- * Rate: 10 Hz in RUNNING and ERROR states.
+ * Rate: 5 Hz in RUNNING and ERROR states.
  */
 struct PayloadSensorVoltage {
     uint16_t batteryMv;     // Battery input voltage (mV)
@@ -472,7 +472,7 @@ struct PayloadSensorRange {
  * IDLE state only. Ignored in RUNNING.
  */
 enum MagCalCmdType : uint8_t {
-    MAG_CAL_START = 1,  // Start sampling; Arduino streams SENSOR_MAG_CAL_STATUS at ~10 Hz
+    MAG_CAL_START = 1,  // Start sampling; Arduino streams SENSOR_MAG_CAL_STATUS at ~5 Hz
     MAG_CAL_STOP  = 2,  // Stop sampling without saving
     MAG_CAL_SAVE  = 3,  // Save computed offsets to EEPROM and activate 9-DOF
     MAG_CAL_APPLY = 4,  // Apply user-provided offsets (from payload) and save
@@ -491,7 +491,7 @@ struct PayloadMagCalCmd {
 /**
  * @brief Magnetometer calibration status (Arduino → RPi) — TLV type SENSOR_MAG_CAL_STATUS (1029)
  *
- * Sent at ~10 Hz while calibration is active. Also sent once on complete/cancel.
+ * Sent at ~5 Hz while calibration is active. Also sent once on complete/cancel.
  */
 struct PayloadMagCalStatus {
     uint8_t  state;         // MagCalState: 0=idle, 1=sampling, 2=complete, 3=saved, 4=error
@@ -552,7 +552,7 @@ struct PayloadSetNeoPixel {
 /**
  * @brief All UserIO state (Arduino → RPi) — TLV type IO_STATUS (1282)
  *
- * Rate: 100 Hz in RUNNING state.
+ * Rate: 25 Hz in RUNNING state.
  *
  * buttonMask covers all digital input GPIOs (buttons AND limit switches).
  * Use SYS_STATUS.limitSwitchMask and stepperHomeLimitGpio[] to distinguish them.

@@ -14,9 +14,9 @@
  *
  * Batched telemetry:
  *   sendTelemetry() opens a single frame, conditionally appends each TLV
- *   based on millis-gated intervals, then transmits the whole frame in one
- *   Serial.write() call.  This cuts per-frame overhead (header + CRC) from
- *   N copies down to one and reduces ISR TX-poll time.
+ *   based on millis-gated intervals, then queues the completed frame for
+ *   non-blocking UART drain from loop(). This cuts per-frame overhead
+ *   (header + CRC) from N copies down to one.
  *
  * Safety:
  * - Liveness timeout: heartbeatValid_ goes false; SafetyManager responds on next 100 Hz check
@@ -25,7 +25,7 @@
  * Usage:
  *   MessageCenter::init();
  *
- *   // In scheduler task @ 100Hz:
+ *   // In scheduler task @ 50Hz:
  *   MessageCenter::processIncoming();
  *   MessageCenter::sendTelemetry();
  */
@@ -43,8 +43,19 @@
 
 // Maximum TLV payload size we will accept from the RPi
 #define MAX_TLV_PAYLOAD_SIZE 256
-#define TX_BUFFER_SIZE 1024
-#define RX_BUFFER_SIZE 1024
+// RX frame storage only needs to hold the largest accepted inbound frame:
+//   28-byte FrameHeader + 8-byte TLV header + 256-byte payload + padding.
+#define RX_BUFFER_SIZE 384
+// The bridge currently sends exactly one command TLV per frame. The largest
+// supported inbound command is SERVO_SET bulk: 28-byte frame header + 8-byte
+// TLV header + 34-byte payload = 70 bytes, padded to 72. Keep some margin, but
+// reject implausibly large inbound frames so a corrupted length field cannot
+// hold the decoder in WaitFullFrame long enough to trip liveness.
+#define RX_MAX_FRAME_ACCEPT_SIZE 96
+// Keep RUNNING telemetry frames small enough that one frame does not occupy the
+// UART for an entire 20 ms task period. Large multi-TLV bursts were driving the
+// queued TX length near 500 bytes and correlating with heartbeat loss.
+#define TX_BUFFER_SIZE 256
 
 // ============================================================================
 // MESSAGE CENTER CLASS (Static)
@@ -76,48 +87,61 @@ public:
     // ========================================================================
 
     /**
-     * @brief Drain the hardware UART ring buffer into the software receive buffer.
+     * @brief Drain the hardware UART ring buffer directly into the TLV decoder.
      *
      * Call from loop() on EVERY iteration, BEFORE Scheduler::tick().
-     * Moves bytes out of the 64-byte HW ring buffer into rxBuffer_ (1024 bytes)
-     * at loop() rate (~67 kHz), preventing ring-buffer overflow when the RPi
-     * sends back-to-back frames (heartbeat + command ≥ 96 bytes at 1 Mbps).
-     *
-     * Cheap when no data is available (~5 µs). No decoding is performed here.
+     * Feeds bytes straight into decodePacket() at loop() rate, avoiding a
+     * second 1 KB staging buffer on top of the TLV decoder's own frame buffer.
      */
     static void drainUart();
 
     /**
+     * @brief Drain queued TX bytes to the Raspberry Pi UART without blocking.
+     *
+     * Called from loop() on every iteration. Uses direct UDR2 polling so TX
+     * does not rely on per-byte USART TX interrupts.
+     */
+    static void drainTx();
+
+    /**
      * @brief Process incoming messages from UART
      *
-     * Decodes all bytes accumulated in rxBuffer_ by drainUart(), fires
-     * decodeCallback() for each complete frame, and routes every TLV to the
-     * appropriate handler. Also runs the heartbeat timeout check.
-     * Should be called from the scheduler at 100 Hz.
+     * drainUart() already feeds bytes into the decoder continuously. This task
+     * keeps the heartbeat timeout logic on a predictable 50 Hz cadence.
+     * Should be called from the scheduler at 50 Hz.
      */
     static void processIncoming();
+
+    /**
+     * @brief Apply deferred slow command side effects outside decode context.
+     *
+     * Servo PCA9685 writes and magnetometer calibration EEPROM/apply actions
+     * are queued by the decode handlers and executed later from the soft task.
+     */
+    static void processDeferred();
 
     /**
      * @brief Send telemetry data to RPi
      *
      * Opens a single TLV frame, conditionally appends each message type
-     * based on its millis interval, then transmits the frame in one write.
+     * based on its millis interval, then queues the finished frame for
+     * non-blocking UART drain from loop().
      *
      * Rates:
-     * - DC_STATUS_ALL      ( 50 Hz, RUNNING)
-     * - STEP_STATUS_ALL    ( 10 Hz, RUNNING)
-     * - SERVO_STATUS_ALL   ( 25 Hz, RUNNING)
-     * - SENSOR_IMU         (100 Hz, RUNNING, if IMU attached)
-     * - SENSOR_KINEMATICS  (100 Hz, RUNNING)
-     * - IO_STATUS          (100 Hz, RUNNING)
-     * - SENSOR_RANGE lidar ( 50 Hz, RUNNING, per configured lidar slot)
-     * - SENSOR_RANGE sonic ( 10 Hz, RUNNING, per configured ultrasonic slot)
+     * - DC_STATUS_ALL      ( 25 Hz, RUNNING)
+     * - STEP_STATUS_ALL    (  5 Hz, RUNNING)
+     * - SERVO_STATUS_ALL   (  5 Hz, RUNNING)
+     * - SENSOR_IMU         ( 25 Hz, RUNNING, if IMU attached)
+     * - SENSOR_KINEMATICS  ( 25 Hz, RUNNING)
+     * - IO_STATUS          ( 25 Hz, RUNNING)
+     * - SENSOR_RANGE lidar ( 10 Hz, RUNNING, per configured lidar slot)
+     * - SENSOR_RANGE sonic (  5 Hz, RUNNING, per configured ultrasonic slot)
      *   (status=3 / not-installed is reported for slots that did not respond on init)
-     * - SENSOR_VOLTAGE     ( 10 Hz, RUNNING or ERROR)
+     * - SENSOR_VOLTAGE     (  5 Hz, RUNNING or ERROR)
      * - SYS_STATUS         (  1 Hz IDLE/ESTOP, 10 Hz RUNNING/ERROR)
-     * - SENSOR_MAG_CAL_STATUS (10 Hz while sampling; immediately on cmd response)
+     * - SENSOR_MAG_CAL_STATUS ( 5 Hz while sampling; immediately on cmd response)
      *
-     * Should be called from scheduler at 100Hz.
+     * Should be called from scheduler at 50Hz.
      */
     static void sendTelemetry();
 
@@ -180,19 +204,41 @@ public:
     static uint16_t getLoopTimeAvgUs()  { return loopTimeAvgUs_; }
     static uint16_t getLoopTimeMaxUs()  { return loopTimeMaxUs_; }
     static uint16_t getUartRxErrors()   { return uartRxErrors_; }
+    static uint16_t getCrcErrorCount()  { return crcErrorCount_; }
+    static uint16_t getFrameLenErrorCount() { return frameLenErrorCount_; }
+    static uint16_t getTlvErrorCount()  { return tlvErrorCount_; }
+    static uint16_t getOversizeErrorCount() { return oversizeErrorCount_; }
+    static uint32_t getTxDroppedFrames(){ return txDroppedFrames_; }
+    static uint16_t getTxPendingBytes() { return (txPendingOffset_ < txPendingLen_) ? (uint16_t)(txPendingLen_ - txPendingOffset_) : 0; }
+    static uint32_t getTimeSinceRxByte() { return millis() - lastRxByteMs_; }
+    static uint8_t getFaultLatchFlags() { return faultLatchFlags_; }
+    static uint16_t getHeartbeatTimeoutMs() { return heartbeatTimeoutMs_; }
+    static uint16_t getServoEnabledMask() { return servoEnabledMask_; }
     static uint16_t getFreeRAM();
+    static void snapshotTrafficWindow(uint16_t &rxBytes,
+                                      uint16_t &rxFrames,
+                                      uint16_t &rxTlvs,
+                                      uint16_t &rxHeartbeats,
+                                      uint16_t &txBytes,
+                                      uint16_t &txFrames);
 
 private:
     // ---- TLV codec (owned directly, no UARTDriver wrapper) ----
     static struct TlvEncodeDescriptor encodeDesc_;
     static struct TlvDecodeDescriptor decodeDesc_;
-    static uint8_t *txBuffer_; // TX buffer built in the encode descriptor
-    static uint8_t rxBuffer_[RX_BUFFER_SIZE];  // Software RX buffer (drain target)
-    static uint16_t rxFill_;                   // Bytes accumulated by drainUart()
+    static uint8_t txStorage_[TX_BUFFER_SIZE];
+    static uint8_t rxStorage_[RX_BUFFER_SIZE];
+    static struct TlvHeader decodeHeaders_[TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(RX_BUFFER_SIZE)];
+    static uint8_t *decodeData_[TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(RX_BUFFER_SIZE)];
+    static uint8_t *txBuffer_;                // Alias of txStorage_ for drainTx()
+    static uint16_t txPendingLen_;            // Bytes queued in txBuffer_
+    static uint16_t txPendingOffset_;         // Next queued TX byte to send
+    static uint32_t txDroppedFrames_;         // Frames skipped because prior TX still draining
 
     // ---- Liveness tracking ----
     static uint32_t lastHeartbeatMs_;    // millis() of last received TLV
     static uint32_t lastCmdMs_;          // millis() of last non-heartbeat command
+    static uint32_t lastRxByteMs_;       // millis() of last raw UART byte received
     static bool heartbeatValid_;         // False if liveness timeout
     static uint16_t heartbeatTimeoutMs_; // Configurable timeout (ms)
 
@@ -215,6 +261,16 @@ private:
 
     // ---- UART error counter ----
     static uint16_t uartRxErrors_;
+    static uint16_t crcErrorCount_;
+    static uint16_t frameLenErrorCount_;
+    static uint16_t tlvErrorCount_;
+    static uint16_t oversizeErrorCount_;
+    static uint16_t rxBytesWindow_;
+    static uint16_t rxFramesWindow_;
+    static uint16_t rxTlvsWindow_;
+    static uint16_t rxHeartbeatsWindow_;
+    static uint16_t txBytesWindow_;
+    static uint16_t txFramesWindow_;
 
     // ---- Telemetry timing ----
     static uint32_t lastDCStatusSendMs_;
@@ -234,6 +290,30 @@ private:
     // included in the very next sendTelemetry() frame rather than sent as a
     // standalone frame from within the command handler.
     static bool pendingMagCal_;
+    static bool pendingServoStatus_;
+    static bool pendingDCStatus_;
+
+    // ---- Deferred servo side effects ----
+    static bool servoHardwareDirty_;
+    static uint16_t servoPulseDirtyMask_;
+    static uint16_t servoOffDirtyMask_;
+    static uint16_t servoPendingPulseUs_[NUM_SERVO_CHANNELS];
+    static bool servoUnavailableLogged_;
+    static bool servoI2CFaultLogged_;
+
+    enum DeferredMagCalAction : uint8_t {
+        DEFER_MAG_NONE = 0,
+        DEFER_MAG_START,
+        DEFER_MAG_STOP,
+        DEFER_MAG_SAVE,
+        DEFER_MAG_APPLY,
+        DEFER_MAG_CLEAR,
+    };
+
+    static DeferredMagCalAction deferredMagCalAction_;
+    static float deferredMagCalOffsetX_;
+    static float deferredMagCalOffsetY_;
+    static float deferredMagCalOffsetZ_;
 
     // ---- Initialization flag ----
     static bool initialized_;
@@ -246,6 +326,7 @@ private:
      * @brief Reset the TX encoder for a new outgoing frame
      */
     static void beginFrame();
+    static bool appendTlv(uint32_t tlvType, uint16_t tlvLen, const void *dataAddr);
 
     /**
      * @brief Finalise and transmit the accumulated frame over RPI_SERIAL
@@ -307,6 +388,7 @@ private:
     // ---- Servo message handlers ----
     static void handleServoEnable(const PayloadServoEnable *payload);
     static void handleServoSet(const PayloadServoSetSingle *payload);
+    static void handleServoSetBulk(const PayloadServoSetBulk *payload);
 
     // ---- User I/O message handlers ----
     static void handleSetLED(const PayloadSetLED *payload);
@@ -314,6 +396,10 @@ private:
 
     // ---- Magnetometer calibration handler ----
     static void handleMagCalCmd(const PayloadMagCalCmd *payload);
+
+    // ---- Deferred command workers ----
+    static void processDeferredServo();
+    static void processDeferredMagCal();
 
     // ========================================================================
     // TELEMETRY APPENDERS
@@ -356,8 +442,8 @@ private:
      * For sensors configured in config.h but absent on the I2C bus:
      * sends status = 3 (not installed) so the RPi can notify the user.
      *
-     * @param lidarOnly  true = only lidar sensors (50 Hz path);
-     *                   false = only ultrasonic sensors (10 Hz path)
+     * @param lidarOnly  true = only lidar sensors (10 Hz path);
+     *                   false = only ultrasonic sensors (5 Hz path)
      */
     static void sendSensorRange(bool lidarOnly);
 

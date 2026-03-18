@@ -10,7 +10,6 @@
 #include "tlvcodec.h"
 
 uint8_t FRAME_HEADER_MAGIC_NUM[8] = {0x02, 0x01, 0x04, 0x03, 0x06, 0x05, 0x08, 0x07};
-size_t MAX_TLVS = 16; // max number of TLVs in a frame
 
 // encoder function definitions
 void initEncodeDescriptor(struct TlvEncodeDescriptor *descriptor, size_t bufferSize, uint32_t deviceId, bool crc)
@@ -106,6 +105,8 @@ void resetDescriptor(struct TlvEncodeDescriptor *descriptor)
 // decoder function definitions
 void initDecodeDescriptor(struct TlvDecodeDescriptor *descriptor, size_t bufferSize, bool crc, void (*callback)(enum DecodeErrorCode *error, const struct FrameHeader *frameHeader, struct TlvHeader *tlvHeaders, uint8_t **tlvData))
 {
+    size_t tlvSlots = TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(bufferSize);
+
     // allocate the buffer
     descriptor->buffer = (uint8_t *)malloc(bufferSize);
     if (descriptor->buffer == NULL)
@@ -114,20 +115,25 @@ void initDecodeDescriptor(struct TlvDecodeDescriptor *descriptor, size_t bufferS
         exit(EXIT_FAILURE);
     }
     // allocate the tlv header and data
-    descriptor->tlvHeaders = (struct TlvHeader *)malloc(sizeof(struct TlvHeader) * MAX_TLVS);
-    if (descriptor->tlvHeaders == NULL)
+    descriptor->tlvHeaders = NULL;
+    descriptor->tlvData = NULL;
+    if (tlvSlots > 0)
     {
-        fprintf(stderr, "Failed to allocate memory for tlv headers\n");
-        free(descriptor->buffer);
-        exit(EXIT_FAILURE);
-    }
-    descriptor->tlvData = (uint8_t **)malloc(sizeof(uint8_t *) * MAX_TLVS);
-    if (descriptor->tlvData == NULL)
-    {
-        fprintf(stderr, "Failed to allocate memory for tlv data\n");
-        free(descriptor->buffer);
-        free(descriptor->tlvHeaders);
-        exit(EXIT_FAILURE);
+        descriptor->tlvHeaders = (struct TlvHeader *)malloc(sizeof(struct TlvHeader) * tlvSlots);
+        if (descriptor->tlvHeaders == NULL)
+        {
+            fprintf(stderr, "Failed to allocate memory for tlv headers\n");
+            free(descriptor->buffer);
+            exit(EXIT_FAILURE);
+        }
+        descriptor->tlvData = (uint8_t **)malloc(sizeof(uint8_t *) * tlvSlots);
+        if (descriptor->tlvData == NULL)
+        {
+            fprintf(stderr, "Failed to allocate memory for tlv data\n");
+            free(descriptor->buffer);
+            free(descriptor->tlvHeaders);
+            exit(EXIT_FAILURE);
+        }
     }
 
     // initialize the descriptor
@@ -146,6 +152,16 @@ void releaseDecodeDescriptor(struct TlvDecodeDescriptor *descriptor)
     {
         free(descriptor->buffer);
         descriptor->buffer = NULL;
+    }
+    if (descriptor->tlvHeaders != NULL)
+    {
+        free(descriptor->tlvHeaders);
+        descriptor->tlvHeaders = NULL;
+    }
+    if (descriptor->tlvData != NULL)
+    {
+        free(descriptor->tlvData);
+        descriptor->tlvData = NULL;
     }
 }
 
@@ -245,8 +261,21 @@ void decodePacket(struct TlvDecodeDescriptor *descriptor, const uint8_t *data)
 
 void parseFrame(struct TlvDecodeDescriptor *descriptor)
 {
+    size_t packetTlvSlots;
+
     descriptor->frameHeader = *(struct FrameHeader *)(descriptor->buffer); // parse all info for a single frame header
     descriptor->ofst = sizeof(struct FrameHeader);                         // offset used for the whole frame
+
+    packetTlvSlots = TLVCODEC_TLV_SLOTS_FOR_FRAME_BYTES(descriptor->frameHeader.numTotalBytes.value);
+    if (descriptor->frameHeader.numTlvs > packetTlvSlots)
+    {
+        descriptor->errorCode = TlvError;
+        if (descriptor->callback != NULL)
+        {
+            descriptor->callback(&descriptor->errorCode, &descriptor->frameHeader, NULL, NULL);
+        }
+        return;
+    }
 
     // Check CRC32 error if enabled
     if (descriptor->crc)

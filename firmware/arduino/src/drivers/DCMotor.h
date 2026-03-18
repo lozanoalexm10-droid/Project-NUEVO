@@ -253,12 +253,37 @@ public:
     /**
      * @brief Update motor control (call from scheduler @ 200Hz)
      *
-     * Performs one iteration of:
-     * - Velocity estimation update
-     * - PID computation (position/velocity cascade)
-     * - PWM output generation
+     * Fast ISR path:
+     * - Reads cached PWM prepared by service()
+     * - Applies PWM output generation only
      */
     void update();
+
+    /**
+     * @brief Refresh slow motor feedback outside ISR context
+     *
+     * Called from a soft scheduler task. Updates the fixed-dt velocity
+     * estimate, optional current sense, stall detection bookkeeping, and
+     * cached control output for the next TIMER1 apply slot.
+     */
+    void service();
+
+    /**
+     * @brief Latch encoder feedback for this motor from ISR context.
+     *
+     * Called from TIMER1 round-robin ISR before update() so the soft control
+     * task can use a coherent encoder snapshot without touching encoder state
+     * in the main loop.
+     */
+    void latchFeedbackISR();
+
+    /**
+     * @brief Publish the staged control output into the live ISR cache.
+     *
+     * Called at the round boundary from TIMER1 ISR so all motors switch to the
+     * next computed control round together.
+     */
+    void publishStagedOutputISR();
 
     // ========================================================================
     // STATE QUERIES
@@ -349,8 +374,35 @@ private:
     IEncoderCounter *encoder_;              // Encoder counter instance
     IVelocityEstimator *velocityEst_;       // Velocity estimator instance
 
-    // Timing
-    uint32_t lastUpdateUs_;                 // Last update timestamp (micros())
+    // Fast-loop cached state shared with TIMER1 ISR
+    volatile int32_t targetVelocityQ16_;    // Velocity setpoint in Q16.16
+    volatile int32_t feedbackVelocityQ16_;  // Latest measured velocity in Q16.16
+    volatile int32_t latchedPosition_;      // Encoder count captured in TIMER1 ISR
+    volatile bool    positionLatched_;      // True once ISR has latched feedback at least once
+    volatile int16_t pendingPwm_;           // Cached PWM command prepared by service()
+    volatile uint16_t pendingDuty_;         // Cached OCR duty prepared by service()
+    volatile uint8_t  pendingDrive_;        // 0=coast, 1=fwd, 2=rev
+    volatile int16_t stagedPwm_;            // Next computed PWM command (not yet published)
+    volatile uint16_t stagedDuty_;          // Next computed OCR duty (not yet published)
+    volatile uint8_t  stagedDrive_;         // Next computed drive state (not yet published)
+    int32_t          posKpQ16_;
+    int32_t          posKiDtQ16_;
+    int32_t          posKdDivDtQ16_;
+    int32_t          velKpQ16_;
+    int32_t          velKiDtQ16_;
+    int32_t          velKdDivDtQ16_;
+    int32_t          posIAccQ16_;
+    int32_t          posPrevErrQ16_;
+    int32_t          velIAccQ16_;
+    int32_t          velPrevErrQ16_;
+    int32_t          prevPosition_;
+    bool             feedbackSeeded_;
+
+    // Cached GPIO access for the fast path
+    volatile uint8_t *in1OutReg_;
+    volatile uint8_t *in2OutReg_;
+    uint8_t           in1Mask_;
+    uint8_t           in2Mask_;
 
     // Encoder stall detection
     bool     encoderFailed_;                // Latches true once stall fault declared; cleared by enable()
@@ -368,6 +420,16 @@ private:
      * @param pwm PWM value (-255 to +255, negative = reverse)
      */
     void setPWM(int16_t pwm);
+
+    /**
+     * @brief Convert a signed PWM command into cached drive state + OCR duty.
+     */
+    void prepareOutput(int16_t pwm, uint8_t &drive, uint16_t &duty) const;
+
+    /**
+     * @brief Apply a precomputed drive state + OCR duty to the hardware pins.
+     */
+    void applyOutput(uint8_t drive, uint16_t duty);
 };
 
 #endif // DCMOTOR_H

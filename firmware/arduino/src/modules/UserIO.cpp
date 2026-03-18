@@ -371,63 +371,38 @@ void UserIO::updateNeoPixelAnimation() {
 
     SystemState state = SystemManager::getState();
 
-    // Reset animation phase on state change for a clean visual transition
-    if (state != lastAnimState_) {
-        animPhase_     = 0;
-        lastAnimState_ = state;
+    // Bring-up profile: keep the NeoPixel as a static state indicator only.
+    // Adafruit_NeoPixel::show() masks interrupts briefly, so avoid steady-state
+    // animations while validating UART liveness.
+    if (state == lastAnimState_) {
+        return;
     }
 
-    uint8_t r = 0, g = 0, b = 0;
+    lastAnimState_ = state;
+    animPhase_ = 0;
+
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
 
     switch (state) {
-
-        // ── INIT: static yellow ────────────────────────────────────────────
         case SYS_STATE_INIT:
             r = 255; g = 180; b = 0;
             break;
-
-        // ── IDLE: slow breathing emerald (~3 s period @ 20 Hz = 60 ticks) ──
-        case SYS_STATE_IDLE: {
-            uint8_t phase = animPhase_ % 60;   // 0–59 repeating
-
-            uint8_t bri;
-            if (phase < 30) {
-                // Fade in: 0 → 225
-                bri = (uint8_t)(15u + ((uint16_t)phase * 210u) / 29u);
-            } else {
-                // Fade out: 225 → 15 (keep a faint glow at the bottom)
-                bri = (uint8_t)(15u + ((uint16_t)(59u - phase) * 210u) / 29u);
-            }
-            hsvToRgb(100, 240, bri, r, g, b);   // Emerald hue ≈ H=141°
-            animPhase_++;
+        case SYS_STATE_IDLE:
+            r = 0; g = 90; b = 25;
             break;
-        }
-
-        // ── RUNNING: rainbow hue sweep (~3.2 s full cycle @ 20 Hz) ─────────
         case SYS_STATE_RUNNING:
-            hsvToRgb((uint8_t)((uint16_t)animPhase_ * 4u), 255, 200, r, g, b);
-            animPhase_++;   // Overflows at 256 → wraps hue naturally
+            r = 0; g = 120; b = 140;
             break;
-
-        // ── ERROR: fast flashing red + slight hue shift (0.5 s, 10 ticks) ──
-        case SYS_STATE_ERROR: {
-            uint8_t phase = animPhase_ % 10;   // 0–9 repeating (0.5 s period)
-            if (phase < 5) {
-                r = 255; g = 0; b = 0;              // Bright pure red (on)
-            } else {
-                hsvToRgb(10, 255, 60, r, g, b);     // Dim orange-red (off pulse)
-            }
-            animPhase_++;
-            break;
-        }
-
-        // ── ESTOP: solid bright red (non-blinking — distinct from ERROR) ───
-        case SYS_STATE_ESTOP:
+        case SYS_STATE_ERROR:
             r = 255; g = 0; b = 0;
             break;
-
+        case SYS_STATE_ESTOP:
+            r = 255; g = 0; b = 40;
+            break;
         default:
-            r = 0; g = 0; b = 30;   // Dim blue for any undefined/unknown state
+            b = 30;
             break;
     }
 

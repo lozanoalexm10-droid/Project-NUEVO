@@ -38,6 +38,7 @@ Verify: `ls -la firmware/tests/test_scheduler/src` should show `src -> ../../ard
 |------|-------|---------------|
 | [test_scheduler](#test_scheduler) | 1 | Timer1 1 kHz cooperative scheduler |
 | [test_uart_tlv](#test_uart_tlv) | 2 | TLV v2.0 protocol, MessageCenter state machine |
+| [test_uart_rx_10khz](#test_uart_rx_10khz) | 2 | UART RX via 10 kHz drain + 100 Hz decode (ISR path) |
 | [test_encoder](#test_encoder) | 3 | Quadrature encoder counting (2x/4x), direction |
 | [test_dc_motor_pwm](#test_dc_motor_pwm) | 3 | H-bridge direct PWM + encoder readback |
 | [test_dc_motor_pid](#test_dc_motor_pid) | 3 | Closed-loop PID velocity and position control |
@@ -90,6 +91,26 @@ Initializes MessageCenter and runs `processIncoming()` + `sendTelemetry()` at 10
 - **Liveness timeout:** 500 ms without any TLV — actuators disabled
 
 **Loopback test:** connect pin 16 (TX2) → pin 17 (RX2). Outgoing packets loop back and reset the liveness timer, so State stays IDLE and Liveness shows "OK".
+
+---
+
+## test_uart_rx_10khz
+
+**Subsystem:** MessageCenter RX (Timer3 drain + Timer4 decode)
+**Hardware:** RPi or PC sending TLV heartbeat frames on Serial2
+
+Replicates the main firmware RX architecture exactly:
+- **TIMER3 @ 10 kHz:** drains Serial2 HW FIFO into MessageCenter ring buffer
+- **TIMER4 @ 100 Hz:** runs `MessageCenter::uartTask()` (decode + heartbeat)
+
+Use this to debug missing bytes or framing errors. The sketch prints a 1 Hz status line:
+`hb` (heartbeat validity), `last` (ms since last TLV), `rxErr` (decode errors),
+and ISR counters (`t3`, `t4`, `task`).
+
+Key toggles (at the top of the sketch):
+- `TEST_UART_NESTED_INTERRUPTS` — enable nested interrupts inside TIMER3
+- `TEST_UART_USE_STEPPER_ISR` — include stepper ISR load at 10 kHz
+- `TEST_UART_DECODE_IN_ISR` — decode in ISR vs main loop
 
 ---
 

@@ -14,23 +14,6 @@ StepperMotor StepperManager::steppers_[NUM_STEPPERS];
 bool StepperManager::initialized_ = false;
 
 // ============================================================================
-// TIMER3 ISR
-// ============================================================================
-
-/**
- * @brief Timer3 Overflow Interrupt
- *
- * Fires at 10 kHz (100 µs period) for stepper pulse generation.
- *
- * Timer3 is configured in Fast PWM mode 14 (ICR3 as TOP) instead of CTC
- * so that OC3A can independently drive hardware PWM on pin 5 while the OVF
- * ISR still fires at 10 kHz.  See ISRScheduler.h for the full explanation.
- */
-ISR(TIMER3_OVF_vect) {
-    StepperManager::timerISR();
-}
-
-// ============================================================================
 // INITIALIZATION
 // ============================================================================
 

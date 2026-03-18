@@ -1,18 +1,17 @@
 /**
  * @file SensorManager.h
- * @brief Centralised sensor management with hard real-time ISR dispatch
+ * @brief Centralised sensor management with soft-scheduler dispatch
  *
- * SensorManager is driven by TIMER4_OVF_vect (configured in ISRScheduler)
- * at a 10 kHz carrier rate.  An internal /100 counter reduces this to a
- * 100 Hz dispatch tick.  Each tick calls isrTick(), which dispatches work
- * at three rates using an internal 0–9 counter:
+ * SensorManager is driven by a 100 Hz soft task in the main loop. Each tick
+ * dispatches work at three rates using an internal 0–9 counter:
  *
  *   update100Hz()  — every tick       → 100 Hz: IMU read + Fusion AHRS
  *   update50Hz()   — even ticks       →  50 Hz: Lidar sensors
  *   update10Hz()   — tick 0 only      →  10 Hz: Voltages + Ultrasonic
  *
- * Call SensorManager::isrTick() from TIMER4_OVF_vect (already done in
- * SensorManager.cpp — do not call it from loop() or the soft scheduler).
+ * Call SensorManager::tick() from the soft scheduler. A compatibility wrapper
+ * named isrTick() remains so older code continues to compile, but the bring-up
+ * profile does not invoke sensor work from an ISR.
  *
  * ── How to add a new sensor ──────────────────────────────────────────────
  *  1. Initialise the driver in init().
@@ -91,15 +90,21 @@ public:
     static void init();
 
     /**
-     * @brief Hard real-time dispatch entry point (called from TIMER4_OVF_vect)
+     * @brief Soft-scheduler dispatch entry point (100 Hz)
      *
      * Dispatches sensor reads at three rates using an internal 0–9 counter:
      *   - update100Hz()  every call       (100 Hz) — IMU + Fusion
      *   - update50Hz()   every 2nd call   ( 50 Hz) — Lidar
      *   - update10Hz()   every 10th call  ( 10 Hz) — Voltages + Ultrasonic
      *
-     * Do NOT call this from user code — it is invoked automatically by
-     * TIMER4_OVF_vect in SensorManager.cpp.
+     * Call from the soft scheduler, not from an ISR.
+     */
+    static void tick();
+
+    /**
+     * @brief Compatibility wrapper for older call sites.
+     *
+     * Equivalent to tick(). Present only to avoid breaking old references.
      */
     static void isrTick();
 
@@ -199,6 +204,7 @@ public:
     static float getBatteryVoltage();
     static float get5VRailVoltage();
     static float getServoVoltage();
+    static bool  isServoRailPresent() { return servoVoltage_ >= VSERVO_MIN_PRESENT_V; }
 
     /**
      * @brief Battery presence check

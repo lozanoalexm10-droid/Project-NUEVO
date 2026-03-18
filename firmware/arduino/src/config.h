@@ -79,13 +79,14 @@
 // TIMING CONFIGURATION
 // ============================================================================
 
-// Hard real-time ISR frequencies (Timer1 and Timer4)
-#define DC_PID_FREQ_HZ          200     // DC motor PID ISR — Timer1 OVF (5 ms)
-#define UART_COMMS_FREQ_HZ      100     // UART comms ISR   — Timer1 OVF every 2nd tick (10 ms)
-#define SENSOR_UPDATE_FREQ_HZ   100     // IMU + Fusion ISR — Timer4 OVF /100 (10 ms)
-#define SENSOR_LIDAR_FREQ_HZ    50      // Lidar ISR        — every 2nd sensor tick (20 ms)
-#define SENSOR_ULTRASONIC_FREQ_HZ 10   // Ultrasonic ISR   — every 10th sensor tick (100 ms)
-#define SENSOR_VOLTAGE_FREQ_HZ  10      // Voltage ISR      — every 10th sensor tick (100 ms)
+// Control and sensor scheduling frequencies
+#define DC_PID_FREQ_HZ          800     // DC motor Timer1 round-robin slot (1.25 ms; 200 Hz per motor)
+#define UART_COMMS_FREQ_HZ      50      // UART task rate in loop() (20 ms bring-up profile)
+#define MOTOR_UPDATE_FREQ_HZ    200     // DC motor soft task rate (5 ms)
+#define SENSOR_UPDATE_FREQ_HZ   100     // Sensor soft task tick (10 ms)
+#define SENSOR_LIDAR_FREQ_HZ    50      // Lidar cadence inside sensor task (20 ms)
+#define SENSOR_ULTRASONIC_FREQ_HZ 10   // Ultrasonic cadence inside sensor task (100 ms)
+#define SENSOR_VOLTAGE_FREQ_HZ  10      // Voltage cadence inside sensor task (100 ms)
 
 // Soft real-time frequencies (millis-based, loop-driven)
 #define USER_IO_FREQ_HZ         20      // LED/button update (50 ms)
@@ -95,8 +96,7 @@
 #define STEPPER_MAX_RATE_SPS    5000    // Maximum steps per second per motor
 
 // Safety timeout
-#define HEARTBEAT_TIMEOUT_MS    2000     // Disable motors if no heartbeat (raised from 500ms
-                                         // to tolerate asyncio event loop jitter at 100Hz telemetry)
+#define HEARTBEAT_TIMEOUT_MS    500     // Disable motors if no heartbeat
 
 // ============================================================================
 // FAULT DETECTION THRESHOLDS
@@ -111,22 +111,46 @@
 #define ENCODER_FAIL_TIMEOUT_MS     500  // ms without encoder movement before fault declared
 
 // UART task wall-clock budget (used only for oscilloscope debug pin A9 reference)
-// taskUART() runs at 100 Hz; the 10 ms budget is the full tick period.
+// taskUART() runs at 50 Hz; the 20 ms budget is the full tick period.
 // NOTE: micros()-based measurement includes ISR preemption time — it is NOT a
 // control-loop overrun. The PID loop is in Timer1 ISR and cannot overrun here.
-#define UART_TASK_BUDGET_US      10000   // 10 ms = full 100 Hz tick period
+#define UART_TASK_BUDGET_US      20000   // 20 ms = full 50 Hz tick period
+
+// UART-safe ISR budgets.
+// At 250 kbps a UART byte arrives every 40 us. Keeping the common ISR path
+// below ~80 us preserves margin against USART2 hardware overrun (DOR2).
+#define PID_ISR_UART_BUDGET_US      80
+#define STEPPER_ISR_UART_BUDGET_US  60
+
+// Full round-robin PID/apply monitoring.
+// Track the wall-clock span from the first Timer1 motor slice to the last
+// Timer1 motor slice against the 200 Hz-per-motor (5 ms) control budget.
+#define PID_ROUND_BUDGET_US    (1000000UL / MOTOR_UPDATE_FREQ_HZ)
 
 // ============================================================================
 // COMMUNICATION SETTINGS
 // ============================================================================
 
 // UART to Raspberry Pi (Serial2)
-#define RPI_BAUD_RATE           1000000  // UART baud rate (set to 1000000 for 1 Mbps production)
+#define RPI_BAUD_RATE           250000  // Conservative bring-up UART baud rate to Raspberry Pi
 #define RPI_SERIAL              Serial2 // Hardware serial port
 
 // Debug serial (Serial0 - USB)
 #define DEBUG_BAUD_RATE         115200
 #define DEBUG_SERIAL            Serial
+#define DEBUG_LOG_BUFFER_SIZE   1024
+#define DEBUG_STATUS_STREAM_HZ  1
+#define TELEMETRY_DC_STATUS_MS       200
+#define TELEMETRY_STEP_STATUS_MS     1000
+#define TELEMETRY_SERVO_STATUS_MS    500
+#define TELEMETRY_IMU_MS             500
+#define TELEMETRY_KINEMATICS_MS      500
+#define TELEMETRY_IO_STATUS_MS       500
+#define TELEMETRY_LIDAR_MS           1000
+#define TELEMETRY_ULTRASONIC_MS      1000
+#define TELEMETRY_VOLTAGE_MS         1000
+#define TELEMETRY_SYS_STATUS_RUN_MS  1000
+#define TELEMETRY_SYS_STATUS_IDLE_MS 1000
 
 // Device identification
 #define DEVICE_ID               0x01    // Arduino device ID for TLV protocol
@@ -291,6 +315,11 @@
 // all supported chemistries (NiMH, LiPo 2S–6S) while remaining above ADC noise.
 #define VBAT_MIN_PRESENT_V      2.0f
 
+// Minimum servo rail voltage to consider external servo power present.
+// Servos are powered from a separate rail, so servo enable should not depend
+// solely on the main battery measurement.
+#define VSERVO_MIN_PRESENT_V    4.0f
+
 // ============================================================================
 // VOLTAGE DIVIDER RATIOS (ADC INPUT SCALING)
 // ============================================================================
@@ -361,6 +390,7 @@
 // #define DEBUG_MOTOR_PID         // Print PID debug info to Serial
 // #define DEBUG_ENCODER           // Print encoder counts to Serial
 // #define DEBUG_TLV_PACKETS       // Print TLV packet info to Serial
+// #define DEBUG_UART_RX_BYTES       // Print every raw byte received on Serial2
 // #define DEBUG_VELOCITY          // Print velocity estimation debug info
 // #define DEBUG_SCHEDULER         // Print scheduler task execution info
 
@@ -375,10 +405,10 @@
 //     A7   ENCODER_ISR   HIGH = inside any encoder interrupt
 //
 //   UART task timing:
-//     A11  UART_TASK     HIGH = entire taskUART() running (100 Hz, ~1-6 ms typical)
+//     A11  UART_TASK     HIGH = entire taskUART() running (50 Hz, ~1-6 ms typical)
 //     A12  UART_RX       HIGH = inside processIncoming() only
 //     A13  UART_TX       HIGH = inside sendTelemetry() only
-//     A9   UART_LATE     Pulse when wall-clock > 10 ms (usually ISR preemption, not a real problem)
+//     A9   UART_LATE     Pulse when wall-clock > 20 ms (usually ISR preemption, not a real problem)
 //
 // KEY INSIGHT (verified by scope):
 //   micros()-based measurement in loop() INCLUDES ISR preemption time.
@@ -396,17 +426,17 @@
 //     Ch1=A11 (UART_TASK), Ch2=A10 (PID_LOOP) — time-base 1 ms/div.
 //     PID pulses inside UART_TASK window = ISR preemption inflation (normal).
 //
-//   Q: "Is the UART task running reliably at 100 Hz?"
+//   Q: "Is the UART task running reliably at 50 Hz?"
 //     Ch1=A11 (UART_TASK) — time-base 5 ms/div, trigger rising.
-//     Period should be ~10 ms; width should be 1-6 ms.
+//     Period should be ~20 ms; width should be 1-6 ms.
 //
-#define DEBUG_PINS_ENABLED      1
+#define DEBUG_PINS_ENABLED      0
 
 #if DEBUG_PINS_ENABLED
   // ISR channels (original)
   #define DEBUG_PIN_ENCODER_ISR   A7    // HIGH inside any encoder ISR
   #define DEBUG_PIN_STEPPER_ISR   A8    // HIGH inside Timer3 (stepper) ISR
-  #define DEBUG_PIN_UART_LATE     A9    // Pulse when taskUART() wall-clock > 10 ms (ISR inflation, not a real error)
+  #define DEBUG_PIN_UART_LATE     A9    // Pulse when taskUART() wall-clock > 20 ms (ISR inflation, not a real error)
   #define DEBUG_PIN_PID_LOOP      A10   // HIGH inside Timer1 (PID) ISR
 
   // UART task sub-channels (new — overrun diagnosis)

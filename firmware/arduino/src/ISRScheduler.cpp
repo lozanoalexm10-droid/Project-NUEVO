@@ -13,12 +13,12 @@ void ISRScheduler::init() {
     noInterrupts();
 
     // ========================================================================
-    // Timer1: Fast PWM mode 14 — 200 Hz OVF → PID + UART ISR
+    // Timer1: Fast PWM mode 14 — 800 Hz OVF → round-robin DC slot
     // ========================================================================
     //
     //   f_cpu     = 16 MHz
     //   prescaler = 8   →   f_timer = 2 MHz
-    //   ICR1      = (2 000 000 / DC_PID_FREQ_HZ) - 1 = 9999  →  200 Hz OVF
+    //   ICR1      = (2 000 000 / DC_PID_FREQ_HZ) - 1 = 2499  →  800 Hz OVF
     //
     //   Fast PWM mode 14: WGM13:10 = 1110
     //     TCCR1A: WGM11=1, WGM10=0
@@ -30,7 +30,7 @@ void ISRScheduler::init() {
 
     TCCR1A = (1 << WGM11);
     TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS11);
-    ICR1   = (uint16_t)((F_CPU / (8UL * DC_PID_FREQ_HZ)) - 1);   // 9999
+    ICR1   = (uint16_t)((F_CPU / (8UL * DC_PID_FREQ_HZ)) - 1);   // 2499 @ 800 Hz
     TCNT1  = 0;
 
 #if defined(PIN_LED_RED_IS_OC1A)
@@ -39,16 +39,13 @@ void ISRScheduler::init() {
     OCR1A   = 0;   // LED off at startup
 #endif
 
-    TIMSK1 = (1 << TOIE1);   // OVF interrupt only (no compare-match interrupts)
+    TIMSK1 = (1 << TOIE1);   // Timer1 round-robin ISR + PWM hardware
 
     // ========================================================================
-    // Timer4: Fast PWM mode 14 — 10 kHz carrier → sensor dispatch ISR
+    // Timer4: Fast PWM mode 14 — 10 kHz carrier for motor PWM only
     // ========================================================================
     //
     //   ICR4 = (2 000 000 / STEPPER_TIMER_FREQ_HZ) - 1 = 199  →  10 kHz OVF
-    //
-    //   SensorManager's TIMER4_OVF_vect ISR counts 100 OVF ticks before
-    //   calling isrTick() — yielding 100 Hz sensor dispatch.
     //
     //   OC4A (pin 6) always connected: M2_EN (Rev A) or M1_EN (Rev B).
     //   OC4B (pin 7) connected only when PIN_M2_EN_IS_OC4B is defined (Rev B).
@@ -73,7 +70,7 @@ void ISRScheduler::init() {
     OCR4B   = 0;   // Motor off at startup
 #endif
 
-    TIMSK4 = (1 << TOIE4);   // OVF interrupt only
+    TIMSK4 = 0;   // No Timer4 ISR in bring-up profile; keep PWM hardware only
 
     interrupts();
 }

@@ -145,6 +145,10 @@ private:
     bool invertDir_;                 // Direction inversion flag
     uint8_t pinA_;                   // Phase A pin number
     uint8_t pinB_;                   // Phase B pin number
+    volatile uint8_t *pinAInReg_;    // Direct input register for phase A
+    volatile uint8_t *pinBInReg_;    // Direct input register for phase B
+    uint8_t pinAMask_;               // Bit mask for phase A
+    uint8_t pinBMask_;               // Bit mask for phase B
 };
 
 // ============================================================================
@@ -190,6 +194,10 @@ private:
     bool invertDir_;                 // Direction inversion flag
     uint8_t pinA_;                   // Phase A pin number
     uint8_t pinB_;                   // Phase B pin number
+    volatile uint8_t *pinAInReg_;    // Direct input register for phase A
+    volatile uint8_t *pinBInReg_;    // Direct input register for phase B
+    uint8_t pinAMask_;               // Bit mask for phase A
+    uint8_t pinBMask_;               // Bit mask for phase B
 
     /**
      * @brief Common interrupt handler for both phases

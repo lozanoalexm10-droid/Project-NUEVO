@@ -146,31 +146,10 @@ void SensorManager::init() {
 }
 
 // ============================================================================
-// TIMER4_OVF_vect ISR — 10 kHz carrier; /100 counter → 100 Hz dispatch
+// tick — 100 Hz dispatcher (called from the soft scheduler)
 // ============================================================================
 
-/**
- * @brief Timer4 Overflow ISR
- *
- * Fires at 10 kHz (same carrier as stepper Timer3).  An internal counter
- * divides this down to 100 Hz before invoking SensorManager::isrTick().
- *
- * sei() is called before isrTick() so the TWI (I2C) interrupt can fire
- * during the sensor reads — Wire.h requires the TWI_vect to be serviced.
- */
-ISR(TIMER4_OVF_vect) {
-    static uint8_t timerCounter = 0;
-    if (++timerCounter < 100) return;   // 10 kHz / 100 = 100 Hz dispatch
-    timerCounter = 0;
-    sei();   // Re-enable interrupts: Wire/TWI needs its own ISR during I2C reads
-    SensorManager::isrTick();
-}
-
-// ============================================================================
-// isrTick — 100 Hz dispatcher (called from TIMER4_OVF_vect)
-// ============================================================================
-
-void SensorManager::isrTick() {
+void SensorManager::tick() {
     if (!initialized_) return;
 
     static uint8_t counter = 0;
@@ -183,6 +162,10 @@ void SensorManager::isrTick() {
     if (counter == 0)        update10Hz(); // tick 0 only  ( 10 Hz)
 
     if (++counter >= 10) counter = 0;
+}
+
+void SensorManager::isrTick() {
+    tick();
 }
 
 // ============================================================================

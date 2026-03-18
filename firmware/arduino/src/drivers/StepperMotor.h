@@ -277,6 +277,14 @@ private:
     uint8_t limitActiveState_;  // State when limit triggered
     bool    hasLimit_;          // Limit switch configured
     bool    enabled_;           // Driver enabled state
+    volatile uint8_t *stepOutReg_;
+    volatile uint8_t *dirOutReg_;
+    volatile uint8_t *enableOutReg_;
+    volatile const uint8_t *limitInReg_;
+    uint8_t stepMask_;
+    uint8_t dirMask_;
+    uint8_t enableMask_;
+    uint8_t limitMask_;
 
     // Motion parameters
     uint16_t maxVelocity_;      // Max velocity (steps/sec)
@@ -293,13 +301,17 @@ private:
     uint16_t stepInterval_;     // Current step interval (timer ticks)
     uint16_t stepCounter_;      // Counter for next step
     uint16_t minInterval_;      // Minimum interval (at max velocity)
+    uint16_t startInterval_;    // Initial interval when accelerating from rest
+    uint32_t intervalQ16_;      // Interval accumulator in Q16.16
+    uint32_t accelDeltaQ16_;    // Interval decrement per accel step in Q16.16
+    uint32_t decelDeltaQ16_;    // Interval increment per decel step in Q16.16
 
     // Acceleration tracking
     uint32_t accelSteps_;       // Steps in acceleration phase
     uint32_t decelSteps_;       // Steps in deceleration phase
     uint32_t cruiseSteps_;      // Steps in cruise phase
     uint32_t stepCount_;        // Steps taken in current move
-    float    currentVelocity_;  // Current velocity (for accel calc)
+    uint16_t currentVelocity_;  // Current velocity (steps/sec)
 
     // ========================================================================
     // INTERNAL HELPERS

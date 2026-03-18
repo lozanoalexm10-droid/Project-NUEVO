@@ -45,19 +45,10 @@
 #include "src/Scheduler.h"
 #include "src/ISRScheduler.h"
 #include "src/modules/EncoderCounter.h"
+#include "src/modules/LoopMonitor.h"
 #include "src/modules/VelocityEstimator.h"
 #include "src/drivers/DCMotor.h"
-
-// ISRScheduler::init() enables TIMSK1 (Timer1 OVF) and TIMSK4 (Timer4 OVF).
-//
-// TIMER4_OVF_vect is already defined in SensorManager.cpp (compiled via src/).
-//   Its handler checks initialized_ before doing anything, so it is safe
-//   to have it fire without SensorManager being initialized.
-//
-// TIMER1_OVF_vect is defined in arduino.ino in production but has no
-//   definition in any src/ file — we must provide a stub here so the
-//   AVR doesn't execute __bad_interrupt (which resets the board) at 200 Hz.
-ISR(TIMER1_OVF_vect) { /* PID driven by soft scheduler in this test */ }
+#include <util/atomic.h>
 
 // ============================================================================
 // ENCODER AND VELOCITY ESTIMATOR INSTANCES
@@ -103,6 +94,130 @@ DCMotor motor1;
 DCMotor motor2;
 DCMotor motor3;
 DCMotor motor4;
+
+DCMotor* const g_motors[NUM_DC_MOTORS] = { &motor1, &motor2, &motor3, &motor4 };
+
+static volatile uint32_t g_motorRoundCount = 0;
+static volatile uint32_t g_motorRequestedRound = 0;
+static volatile uint32_t g_motorComputedRound = 0;
+static volatile uint32_t g_motorAppliedRound = 0;
+static volatile uint8_t g_motorCurrentSlot = 0;
+static volatile uint8_t g_motorComputeSeq = 0;
+static volatile uint8_t g_motorPreparedSeq = 0;
+static volatile uint8_t g_motorAppliedSeq = 0;
+static volatile uint32_t g_motorMissedRoundCount = 0;
+static volatile uint32_t g_motorLateComputeCount = 0;
+static volatile uint32_t g_motorReusedOutputCount = 0;
+static volatile uint32_t g_motorCrossRoundComputeCount = 0;
+static volatile bool g_motorRoundReady = false;
+static volatile bool g_motorOutputsReady = false;
+static volatile bool g_motorComputeBusy = false;
+
+static uint16_t clampElapsedUs(uint32_t elapsedUs) {
+    return (elapsedUs > 0xFFFFUL) ? 0xFFFFU : (uint16_t)elapsedUs;
+}
+
+static uint16_t timerTicksToUs(uint16_t ticks) {
+    return (uint16_t)((ticks + 1U) >> 1);
+}
+
+static bool controlActive() {
+    for (uint8_t i = 0; i < NUM_DC_MOTORS; i++) {
+        if (g_motors[i]->isEnabled()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void snapshotMotorControl(uint32_t &roundCount,
+                                 uint32_t &requestedRound,
+                                 uint32_t &computedRound,
+                                 uint32_t &appliedRound,
+                                 uint8_t &slot,
+                                 uint8_t &computeSeq,
+                                 uint8_t &appliedSeq,
+                                 uint32_t &missedRoundCount,
+                                 uint32_t &lateComputeCount,
+                                 uint32_t &reusedOutputCount,
+                                 uint32_t &crossRoundComputeCount,
+                                 bool &computeBusy) {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        roundCount = g_motorRoundCount;
+        requestedRound = g_motorRequestedRound;
+        computedRound = g_motorComputedRound;
+        appliedRound = g_motorAppliedRound;
+        slot = g_motorCurrentSlot;
+        computeSeq = g_motorComputeSeq;
+        appliedSeq = g_motorAppliedSeq;
+        missedRoundCount = g_motorMissedRoundCount;
+        lateComputeCount = g_motorLateComputeCount;
+        reusedOutputCount = g_motorReusedOutputCount;
+        crossRoundComputeCount = g_motorCrossRoundComputeCount;
+        computeBusy = g_motorComputeBusy;
+    }
+}
+
+// ISRScheduler::init() enables TIMSK1 (Timer1 OVF) and TIMSK4 (Timer4 OVF).
+//
+// This test now mirrors the production mixed-control architecture:
+// - TIMER1 @ 800 Hz latches one motor's encoder count and applies one cached
+//   H-bridge output per tick
+// - taskMotorPID() computes the next round during the current round
+ISR(TIMER1_OVF_vect) {
+    static uint8_t motorSlot = 0;
+    static uint32_t roundStartUs = 0;
+
+    uint16_t t0 = TCNT1;
+    bool active = controlActive();
+    g_motorCurrentSlot = motorSlot;
+
+    if (motorSlot == 0U) {
+        if (active) {
+            g_motorRoundCount++;
+            uint32_t currentRound = g_motorRoundCount;
+            roundStartUs = micros();
+            if (g_motorOutputsReady && g_motorComputedRound == currentRound) {
+                for (uint8_t i = 0; i < NUM_DC_MOTORS; i++) {
+                    g_motors[i]->publishStagedOutputISR();
+                }
+                g_motorAppliedSeq = g_motorPreparedSeq;
+                g_motorAppliedRound = currentRound;
+                g_motorOutputsReady = false;
+            } else {
+                g_motorReusedOutputCount++;
+            }
+            if (g_motorRoundReady) {
+                g_motorMissedRoundCount++;
+            }
+            g_motorRequestedRound = currentRound + 1U;
+            g_motorRoundReady = true;
+        } else {
+            g_motorOutputsReady = false;
+            g_motorRoundReady = false;
+            g_motorRequestedRound = g_motorRoundCount;
+            g_motorComputedRound = g_motorRoundCount;
+            g_motorAppliedRound = g_motorRoundCount;
+            g_motorAppliedSeq = g_motorPreparedSeq;
+            roundStartUs = micros();
+        }
+    }
+
+    g_motors[motorSlot]->latchFeedbackISR();
+    g_motors[motorSlot]->update();
+
+    if (motorSlot == (NUM_DC_MOTORS - 1U)) {
+        if (active) {
+            LoopMonitor::recordPidRoundSpan(clampElapsedUs(micros() - roundStartUs), true);
+        } else {
+            LoopMonitor::recordPidRoundSpan(0, false);
+        }
+    }
+
+    motorSlot = (uint8_t)((motorSlot + 1U) % NUM_DC_MOTORS);
+    g_motorCurrentSlot = motorSlot;
+    LoopMonitor::record(SLOT_PID_ISR, timerTicksToUs((uint16_t)(TCNT1 - t0)));
+}
 
 // ============================================================================
 // TEST STATE MACHINE
@@ -158,46 +273,188 @@ ISR(PCINT0_vect) { encoder4.onInterruptA(); }
 // ============================================================================
 
 /**
- * @brief Motor PID update task (200Hz)
+ * @brief Motor control compute task (one-round pipeline, soft)
  */
 void taskMotorPID() {
-    motor1.update();
-    motor2.update();
-    motor3.update();
-    motor4.update();
+    if (!controlActive()) {
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+            g_motorComputeBusy = false;
+            g_motorRoundReady = false;
+            g_motorOutputsReady = false;
+            g_motorRequestedRound = g_motorRoundCount;
+            g_motorComputedRound = g_motorRoundCount;
+        }
+        return;
+    }
+
+    uint32_t requestedRound = 0;
+    uint8_t slotSnapshot = 0;
+    bool shouldRun = false;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        if (g_motorRoundReady && !g_motorComputeBusy) {
+            requestedRound = g_motorRequestedRound;
+            slotSnapshot = g_motorCurrentSlot;
+            g_motorRoundReady = false;
+            g_motorComputeBusy = true;
+            shouldRun = true;
+        }
+    }
+    if (!shouldRun) {
+        return;
+    }
+
+        if (slotSnapshot == 0U) {
+            g_motorLateComputeCount++;
+        }
+
+    uint32_t t0 = micros();
+    motor1.service();
+    motor2.service();
+    motor3.service();
+    motor4.service();
+
+    uint16_t elapsedUs = clampElapsedUs(micros() - t0);
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        if (g_motorRoundCount >= requestedRound) {
+            g_motorCrossRoundComputeCount++;
+        }
+        g_motorComputeSeq++;
+        g_motorPreparedSeq = g_motorComputeSeq;
+        g_motorComputedRound = requestedRound;
+        g_motorOutputsReady = true;
+        g_motorComputeBusy = false;
+    }
+
+    LoopMonitor::record(SLOT_MOTOR_TASK, elapsedUs);
 }
 
 /**
  * @brief Status printing task (5Hz)
  */
 void taskPrintStatus() {
-    DEBUG_SERIAL.print(F("M1: "));
+    static uint32_t prevMissedRoundCount = 0;
+    static uint32_t prevLateComputeCount = 0;
+    static uint32_t prevReusedOutputCount = 0;
+    static uint32_t prevCrossRoundComputeCount = 0;
+
+    uint32_t roundCount = 0;
+    uint32_t requestedRound = 0;
+    uint32_t computedRound = 0;
+    uint32_t appliedRound = 0;
+    uint8_t slot = 0;
+    uint8_t computeSeq = 0;
+    uint8_t appliedSeq = 0;
+    uint32_t missedRoundCount = 0;
+    uint32_t lateComputeCount = 0;
+    uint32_t reusedOutputCount = 0;
+    uint32_t crossRoundComputeCount = 0;
+    bool computeBusy = false;
+    snapshotMotorControl(roundCount,
+                         requestedRound,
+                         computedRound,
+                         appliedRound,
+                         slot,
+                         computeSeq,
+                         appliedSeq,
+                         missedRoundCount,
+                         lateComputeCount,
+                         reusedOutputCount,
+                         crossRoundComputeCount,
+                         computeBusy);
+    uint32_t missedRoundDelta = missedRoundCount - prevMissedRoundCount;
+    uint32_t lateComputeDelta = lateComputeCount - prevLateComputeCount;
+    uint32_t reusedOutputDelta = reusedOutputCount - prevReusedOutputCount;
+    uint32_t crossRoundDelta = crossRoundComputeCount - prevCrossRoundComputeCount;
+    prevMissedRoundCount = missedRoundCount;
+    prevLateComputeCount = lateComputeCount;
+    prevReusedOutputCount = reusedOutputCount;
+    prevCrossRoundComputeCount = crossRoundComputeCount;
+
+    DEBUG_SERIAL.println(F("[CONTROL]"));
+    DEBUG_SERIAL.print(F("round="));
+    DEBUG_SERIAL.print(roundCount);
+    DEBUG_SERIAL.print(F(" req/cmp/app="));
+    DEBUG_SERIAL.print(requestedRound);
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(computedRound);
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(appliedRound);
+    DEBUG_SERIAL.print(F(" slot="));
+    DEBUG_SERIAL.print(slot);
+    DEBUG_SERIAL.print(F(" seq="));
+    DEBUG_SERIAL.print(computeSeq);
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(appliedSeq);
+    DEBUG_SERIAL.print(F(" lag="));
+    DEBUG_SERIAL.print((uint8_t)(computeSeq - appliedSeq));
+    DEBUG_SERIAL.print(F(" busy="));
+    DEBUG_SERIAL.println(computeBusy ? F("yes") : F("no"));
+    DEBUG_SERIAL.print(F("window missed="));
+    DEBUG_SERIAL.print(missedRoundDelta);
+    DEBUG_SERIAL.print(F(" late="));
+    DEBUG_SERIAL.print(lateComputeDelta);
+    DEBUG_SERIAL.print(F(" reused="));
+    DEBUG_SERIAL.print(reusedOutputDelta);
+    DEBUG_SERIAL.print(F(" cross="));
+    DEBUG_SERIAL.println(crossRoundDelta);
+
+    DEBUG_SERIAL.print(F("M1 pos="));
     DEBUG_SERIAL.print(motor1.getPosition());
-    DEBUG_SERIAL.print(F("t "));
+    DEBUG_SERIAL.print(F(" vel="));
     DEBUG_SERIAL.print((int)motor1.getVelocity());
-    DEBUG_SERIAL.print(F("t/s PWM="));
+    DEBUG_SERIAL.print(F(" pwm="));
     DEBUG_SERIAL.print(motor1.getPWMOutput());
-
-    DEBUG_SERIAL.print(F("  M2: "));
+    DEBUG_SERIAL.print(F(" | M2 pos="));
     DEBUG_SERIAL.print(motor2.getPosition());
-    DEBUG_SERIAL.print(F("t "));
+    DEBUG_SERIAL.print(F(" vel="));
     DEBUG_SERIAL.print((int)motor2.getVelocity());
-    DEBUG_SERIAL.print(F("t/s PWM="));
-    DEBUG_SERIAL.print(motor2.getPWMOutput());
+    DEBUG_SERIAL.print(F(" pwm="));
+    DEBUG_SERIAL.println(motor2.getPWMOutput());
 
-    DEBUG_SERIAL.print(F("  M3: "));
+    DEBUG_SERIAL.print(F("M3 pos="));
     DEBUG_SERIAL.print(motor3.getPosition());
-    DEBUG_SERIAL.print(F("t "));
+    DEBUG_SERIAL.print(F(" vel="));
     DEBUG_SERIAL.print((int)motor3.getVelocity());
-    DEBUG_SERIAL.print(F("t/s PWM="));
+    DEBUG_SERIAL.print(F(" pwm="));
     DEBUG_SERIAL.print(motor3.getPWMOutput());
-
-    DEBUG_SERIAL.print(F("  M4: "));
+    DEBUG_SERIAL.print(F(" | M4 pos="));
     DEBUG_SERIAL.print(motor4.getPosition());
-    DEBUG_SERIAL.print(F("t "));
+    DEBUG_SERIAL.print(F(" vel="));
     DEBUG_SERIAL.print((int)motor4.getVelocity());
-    DEBUG_SERIAL.print(F("t/s PWM="));
+    DEBUG_SERIAL.print(F(" pwm="));
     DEBUG_SERIAL.println(motor4.getPWMOutput());
+
+    DEBUG_SERIAL.println(F("[TIMING] (avg/peak/max)"));
+    DEBUG_SERIAL.print(F("pid "));
+    DEBUG_SERIAL.print(LoopMonitor::getAvgUs(SLOT_PID_ISR));
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(LoopMonitor::getPeakUs(SLOT_PID_ISR));
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(LoopMonitor::getMaxUs(SLOT_PID_ISR));
+    DEBUG_SERIAL.print(F(" ("));
+    DEBUG_SERIAL.print(LoopMonitor::getBudgetUs(SLOT_PID_ISR));
+    DEBUG_SERIAL.print(F(") us | pidr "));
+    DEBUG_SERIAL.print(LoopMonitor::getPidRoundAvgUs());
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(LoopMonitor::getPidRoundPeakUs());
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(LoopMonitor::getPidRoundMaxUs());
+    DEBUG_SERIAL.print(F(" ("));
+    DEBUG_SERIAL.print(LoopMonitor::getPidRoundBudgetUs());
+    DEBUG_SERIAL.println(F(") us"));
+
+    DEBUG_SERIAL.print(F("motor "));
+    DEBUG_SERIAL.print(LoopMonitor::getAvgUs(SLOT_MOTOR_TASK));
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(LoopMonitor::getPeakUs(SLOT_MOTOR_TASK));
+    DEBUG_SERIAL.print(F("/"));
+    DEBUG_SERIAL.print(LoopMonitor::getMaxUs(SLOT_MOTOR_TASK));
+    DEBUG_SERIAL.print(F(" ("));
+    DEBUG_SERIAL.print(LoopMonitor::getBudgetUs(SLOT_MOTOR_TASK));
+    DEBUG_SERIAL.println(F(") us"));
+    DEBUG_SERIAL.println();
+
+    LoopMonitor::clearPeaks();
 }
 
 /**
@@ -265,6 +522,14 @@ void taskTestStateMachine() {
 
         case TEST_POSITION_FORWARD:
             DEBUG_SERIAL.println(F("\n=== TEST: Position Control (Reverse) ==="));
+            // Re-enable resets both PIDs (clears velocity integral windup that
+            // accumulated while holding position against friction at +720 ticks).
+            // Without this, the saturated velocity integral fights the proportional
+            // term and the motors may not start moving in the reverse direction.
+            motor1.enable(DC_MODE_POSITION);
+            motor2.enable(DC_MODE_POSITION);
+            motor3.enable(DC_MODE_POSITION);
+            motor4.enable(DC_MODE_POSITION);
             motor1.setTargetPosition(TEST_POSITION_REV);
             motor2.setTargetPosition(TEST_POSITION_REV);
             motor3.setTargetPosition(TEST_POSITION_REV);
@@ -303,6 +568,7 @@ void setup() {
 
     // Initialize Scheduler
     Scheduler::init();
+    LoopMonitor::init();
     DEBUG_SERIAL.println(F("[Setup] Scheduler initialized"));
 
     // Initialize encoders (with direction flags from config.h)
@@ -391,11 +657,11 @@ void setup() {
     DEBUG_SERIAL.println(F("[Setup] All 4 motors initialized"));
 
     // Register scheduler tasks
-    Scheduler::registerTask(taskMotorPID, 5, 0);            // 5ms (200Hz)
     Scheduler::registerTask(taskPrintStatus, 200, 1);       // 200ms (5Hz)
     Scheduler::registerTask(taskTestStateMachine, 2000, 2); // 2000ms state timer
 
     DEBUG_SERIAL.println(F("[Setup] Tasks registered"));
+    DEBUG_SERIAL.println(F("[Setup] Motor compute is round-driven from Timer1 slot-3 flag"));
     DEBUG_SERIAL.println();
     DEBUG_SERIAL.print(F("PID Vel: Kp="));  DEBUG_SERIAL.print(DEFAULT_VEL_KP);
     DEBUG_SERIAL.print(F(" Ki="));          DEBUG_SERIAL.print(DEFAULT_VEL_KI);
@@ -403,6 +669,7 @@ void setup() {
     DEBUG_SERIAL.print(F("PID Pos: Kp="));  DEBUG_SERIAL.print(DEFAULT_POS_KP);
     DEBUG_SERIAL.print(F(" Ki="));          DEBUG_SERIAL.print(DEFAULT_POS_KI);
     DEBUG_SERIAL.print(F(" Kd="));          DEBUG_SERIAL.println(DEFAULT_POS_KD);
+    DEBUG_SERIAL.println(F("Control: mixed 800Hz ISR latch/apply + 200Hz soft compute"));
     DEBUG_SERIAL.println(F("Test sequence (5s each): +vel / -vel / 0 / +pos / -pos"));
     DEBUG_SERIAL.println(F("========================================"));
     DEBUG_SERIAL.println();
@@ -422,5 +689,7 @@ void setup() {
 // ============================================================================
 
 void loop() {
+    taskMotorPID();
     Scheduler::tick();
+    taskMotorPID();
 }
