@@ -49,13 +49,14 @@ else:
 message_router.attach_transport_sender(serial_manager.send)
 
 serial_task  = None
+query_task   = None
 ros2_node    = None
 ros2_thread  = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global serial_task, ros2_node, ros2_thread
+    global serial_task, query_task, ros2_node, ros2_thread
 
     print(f"[App] Starting NUEVO Bridge (mock={MOCK_MODE}, ros2={_ros2_available})...")
 
@@ -70,11 +71,25 @@ async def lifespan(app: FastAPI):
     # ── Serial manager startup ────────────────────────────────────────────────
     serial_task = asyncio.create_task(serial_manager.run())
 
+    async def periodic_router_queries() -> None:
+        while True:
+            await asyncio.sleep(1.0)
+            if serial_manager.stats.get("connected", False):
+                message_router.poll_runtime_queries()
+
+    query_task = asyncio.create_task(periodic_router_queries())
+
     yield  # ── Application runs here ─────────────────────────────────────────
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     print("[App] Shutting down...")
     serial_manager.stop()
+    if query_task:
+        query_task.cancel()
+        try:
+            await query_task
+        except asyncio.CancelledError:
+            pass
     if serial_task:
         await serial_task
 
@@ -103,6 +118,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
         return
 
     await ws_manager.connect(websocket)
+    for message in message_router.get_cached_ws_messages():
+        await ws_manager.send_to(websocket, message)
 
     try:
         while True:

@@ -695,7 +695,7 @@ export function SensorSection({ source }: SensorSectionProps) {
   }
 
   const attachedSensors = system?.attachedSensors ?? 0;
-  const hasIMU = (attachedSensors & 0x01) !== 0;
+  const hasIMU = ((attachedSensors & 0x01) !== 0) || imu !== null || magCal !== null || ((system?.runtimeFlags ?? 0) & 0x10) !== 0;
   const hasAny = hasIMU || rangeSensors.length > 0;
 
   if (!hasAny) {

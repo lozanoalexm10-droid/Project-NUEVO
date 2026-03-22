@@ -1,8 +1,8 @@
 import ctypes
 
-from nuevo_bridge.TLV_TypeDefs import DC_ENABLE, SENSOR_MAG_CAL_CMD, SYS_POWER, SYS_STATE
+from nuevo_bridge.TLV_TypeDefs import DC_ENABLE, SENSOR_MAG_CAL_CMD, SYS_DIAG_RSP, SYS_INFO_RSP, SYS_POWER, SYS_STATE
 from nuevo_bridge.message_router import MessageRouter
-from nuevo_bridge.payloads import PayloadDCEnable, PayloadMagCalCmd, PayloadSysPower, PayloadSysState
+from nuevo_bridge.payloads import PayloadDCEnable, PayloadMagCalCmd, PayloadSysDiagRsp, PayloadSysInfoRsp, PayloadSysPower, PayloadSysState
 from tlvcodec import DecodeErrorCode, Decoder, Encoder
 
 
@@ -72,6 +72,22 @@ def main() -> None:
     assert payload.offsetY == -2.0
     assert payload.offsetZ == 3.0
     assert [payload.softIronMatrix[i] for i in range(9)] == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+    info = PayloadSysInfoRsp()
+    info.sensorCapabilityMask = 0x01
+    decoded = router.decode_incoming(SYS_INFO_RSP, bytes(info))
+    assert decoded is not None
+
+    diag = PayloadSysDiagRsp()
+    diag.uartRxErrors = 7
+    decoded = router.decode_incoming(SYS_DIAG_RSP, bytes(diag))
+    assert decoded is not None
+
+    cached = router.get_cached_ws_messages()
+    topics = [message["topic"] for message in cached]
+    assert "sys_info_rsp" in topics
+    assert "sys_diag_rsp" in topics
+    assert router._latest_ws_messages["sys_diag_rsp"]["data"]["uartRxErrors"] == 7
 
     print("PASS: message router compact tlv")
 

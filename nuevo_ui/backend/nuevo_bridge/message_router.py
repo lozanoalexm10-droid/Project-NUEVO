@@ -79,6 +79,7 @@ class MessageRouter:
         self._io_output: Optional[dict] = None
         self._dc_pid_cache: Dict[Tuple[int, int], dict] = {}
         self._step_config_cache: Dict[int, dict] = {}
+        self._latest_ws_messages: Dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Transport
@@ -105,6 +106,12 @@ class MessageRouter:
         self._sys_diag = None
         self._dc_pid_cache.clear()
         self._step_config_cache.clear()
+        for topic in ("sys_info_rsp", "sys_config_rsp", "sys_diag_rsp"):
+            self._latest_ws_messages.pop(topic, None)
+        for topic in list(self._latest_ws_messages.keys()):
+            if topic == "dc_pid_rsp" or topic.startswith("dc_pid_rsp:") or \
+               topic == "step_config_rsp" or topic.startswith("step_config_rsp:"):
+                self._latest_ws_messages.pop(topic, None)
 
     def _request_bootstrap(self) -> None:
         self._invalidate_bootstrap_cache()
@@ -119,7 +126,43 @@ class MessageRouter:
 
     def _wrap(self, topic: str, data: dict) -> dict:
         self._mag_cal_controller.observe(topic, data)
-        return {"topic": topic, "data": data, "ts": time.time()}
+        message = {"topic": topic, "data": data, "ts": time.time()}
+        self._latest_ws_messages[topic] = message
+        return message
+
+    def get_cached_ws_messages(self) -> List[dict]:
+        ordered_topics = [
+            "sys_info_rsp",
+            "sys_config_rsp",
+            "sys_diag_rsp",
+            "sys_power",
+            "sys_state",
+            "io_input_state",
+            "io_output_state",
+            "dc_state_all",
+            "step_state_all",
+            "servo_state_all",
+            "sensor_imu",
+            "sensor_kinematics",
+            "sensor_ultrasonic_all",
+            "sensor_mag_cal_status",
+        ]
+        messages: List[dict] = []
+        for topic in ordered_topics:
+            message = self._latest_ws_messages.get(topic)
+            if message is not None:
+                messages.append(message)
+        for key in sorted(self._latest_ws_messages.keys()):
+            if key.startswith("dc_pid_rsp:") or key.startswith("step_config_rsp:"):
+                messages.append(self._latest_ws_messages[key])
+        return messages
+
+    def poll_runtime_queries(self) -> None:
+        if self._sys_info is None:
+            self.send_wire_command("sys_info_req", {"target": 0xFF})
+        if self._sys_config is None:
+            self.send_wire_command("sys_config_req", {"target": 0xFF})
+        self.send_wire_command("sys_diag_req", {"target": 0xFF})
 
     # ------------------------------------------------------------------
     # Decoders
@@ -198,7 +241,7 @@ class MessageRouter:
         motor_id = int(decoded["motorId"])
         loop_type = int(decoded["loopType"])
         self._dc_pid_cache[(motor_id, loop_type)] = decoded
-        return [self._wrap("dc_pid_rsp", {
+        message = self._wrap("dc_pid_rsp", {
             "motorNumber": motor_id + 1,
             "loopType": loop_type,
             "kp": float(decoded["kp"]),
@@ -206,7 +249,9 @@ class MessageRouter:
             "kd": float(decoded["kd"]),
             "maxOutput": float(decoded["maxOutput"]),
             "maxIntegral": float(decoded["maxIntegral"]),
-        })]
+        })
+        self._latest_ws_messages[f"dc_pid_rsp:{motor_id}:{loop_type}"] = message
+        return [message]
 
     def _decode_step_state_all(self, tlv_data: bytes) -> DecodedMessages:
         if len(tlv_data) != ctypes.sizeof(PayloadStepStateAll):
@@ -233,11 +278,13 @@ class MessageRouter:
             return None
         stepper_id = int(decoded["stepperId"])
         self._step_config_cache[stepper_id] = decoded
-        return [self._wrap("step_config_rsp", {
+        message = self._wrap("step_config_rsp", {
             "stepperNumber": stepper_id + 1,
             "maxVelocity": int(decoded["maxVelocity"]),
             "acceleration": int(decoded["acceleration"]),
-        })]
+        })
+        self._latest_ws_messages[f"step_config_rsp:{stepper_id}"] = message
+        return [message]
 
     def _decode_servo_state_all(self, tlv_data: bytes) -> DecodedMessages:
         if len(tlv_data) != ctypes.sizeof(PayloadServoStateAll):
