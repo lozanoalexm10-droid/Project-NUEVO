@@ -163,13 +163,7 @@ class NuevoBridgeNode(Node):
     def _legacy_error_flags(self) -> int:
         if not self._sys_state:
             return 0
-        error_flags = int(self._sys_state.get('errorFlags', 0))
-        warning_flags = int(self._sys_state.get('warningFlags', 0))
-        if warning_flags & 0x01:
-            error_flags |= 0x20
-        if warning_flags & 0x02:
-            error_flags |= 0x40
-        return error_flags
+        return int(self._sys_state.get('errorFlags', 0))
 
     def _attached_sensors_mask(self) -> int:
         capability = int((self._sys_info or {}).get('sensorCapabilityMask', 0))

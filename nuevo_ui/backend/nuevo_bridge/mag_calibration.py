@@ -274,17 +274,20 @@ class MagCalibrationController:
         if len(self._samples) > self.MAX_SAMPLES:
             self._samples.pop(0)
 
-        grew = False
+        prev_spans = [
+            0.0 if not math.isfinite(self._min[idx]) or not math.isfinite(self._max[idx])
+            else (self._max[idx] - self._min[idx])
+            for idx in range(3)
+        ]
         for idx, value in enumerate(sample):
             if value < self._min[idx]:
                 self._min[idx] = value
-                grew = True
             if value > self._max[idx]:
                 self._max[idx] = value
-                grew = True
-        if grew:
-            spans = [self._max[idx] - self._min[idx] for idx in range(3)]
-            if max(spans) > 0.0:
+        spans = [self._max[idx] - self._min[idx] for idx in range(3)]
+        if max(spans) > 0.0:
+            span_growth = max(spans[idx] - prev_spans[idx] for idx in range(3))
+            if span_growth >= self.SPAN_GROWTH_EPS_UT:
                 self._last_span_growth_time = now
 
         elapsed = now - self._start_time
@@ -296,7 +299,6 @@ class MagCalibrationController:
         if elapsed < self.MIN_DURATION_S or len(self._samples) < self.MIN_SAMPLES:
             return
 
-        spans = [self._max[idx] - self._min[idx] for idx in range(3)]
         if min(spans) < self.MIN_AXIS_SPAN_UT:
             return
         if min(spans) / max(spans) < self.MIN_AXIS_RATIO:

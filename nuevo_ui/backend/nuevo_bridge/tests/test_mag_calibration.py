@@ -60,6 +60,30 @@ def main() -> None:
     assert data["command"] == 4
     assert len(data["softIronMatrix"]) == 9
 
+    sent = []
+    controller = MagCalibrationController(sender=lambda cmd, data: sent.append((cmd, data)) or True)
+    controller.observe("sensor_mag_cal_status", {"state": 1})
+    controller._sampling = True
+    controller._start_time -= controller.MIN_DURATION_S + 1.0
+    controller._last_span_growth_time -= controller.STABLE_WINDOW_S + 1.0
+    controller._samples = list(samples[:-1])
+    xs = [sample[0] for sample in controller._samples]
+    ys = [sample[1] for sample in controller._samples]
+    zs = [sample[2] for sample in controller._samples]
+    controller._min = [min(xs), min(ys), min(zs)]
+    controller._max = [max(xs), max(ys), max(zs)]
+
+    tiny_growth_sample = (
+        controller._max[0] + controller.SPAN_GROWTH_EPS_UT * 0.5,
+        samples[-1][1],
+        samples[-1][2],
+    )
+    controller.observe("sensor_imu", {"magX": tiny_growth_sample[0], "magY": tiny_growth_sample[1], "magZ": tiny_growth_sample[2]})
+    assert sent, "controller did not emit calibration apply command after sub-epsilon span growth"
+    cmd, data = sent[-1]
+    assert cmd == "sensor_mag_cal_cmd"
+    assert data["command"] == 4
+
     print("PASS: mag calibration fit")
 
 
