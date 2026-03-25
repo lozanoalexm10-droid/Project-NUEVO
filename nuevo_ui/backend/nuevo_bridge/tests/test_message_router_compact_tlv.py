@@ -38,6 +38,7 @@ def main() -> None:
     voltage.batteryMv = 12100
     voltage.rail5vMv = 5000
     voltage.servoRailMv = 6000
+    voltage.batteryType = 2
     voltage.reserved = 0
     voltage.timestamp = 1234
 
@@ -54,6 +55,7 @@ def main() -> None:
     assert messages[0]["data"]["state"] == 2
     assert messages[1]["topic"] == "sys_power"
     assert messages[1]["data"]["servoRailMv"] == 6000
+    assert messages[1]["data"]["batteryType"] == 2
 
     outgoing = router.handle_outgoing("dc_enable", {"motorNumber": 1, "mode": 2})
     assert outgoing is not None

@@ -119,7 +119,9 @@ class PayloadSysPower(ctypes.Structure):
         ("batteryMv", ctypes.c_uint16),
         ("rail5vMv", ctypes.c_uint16),
         ("servoRailMv", ctypes.c_uint16),
-        ("reserved", ctypes.c_uint16),
+        # BATTERY_TYPE constant from firmware config.h.
+        ("batteryType", ctypes.c_uint8),
+        ("reserved", ctypes.c_uint8),
         ("timestamp", ctypes.c_uint32),
     ]
 

@@ -123,6 +123,14 @@ class SerialManager:
         self._pending_messages: list = []  # accumulated within one decoder.decode() call
         self._heartbeat_thread: Optional[threading.Thread] = None
 
+        # Data-level liveness tracking.
+        # `connected` reflects the physical serial port state.
+        # `_arduino_data_ok` reflects whether valid TLV frames have been received
+        # within the last ARDUINO_DATA_TIMEOUT seconds.  The UI's serialConnected
+        # field is True only when both are True.
+        self._last_valid_rx_time: float = 0.0   # monotonic; 0 = never received
+        self._arduino_data_ok: bool = False
+
     # ------------------------------------------------------------------
     # ROS2 integration hook
     # ------------------------------------------------------------------
@@ -173,6 +181,19 @@ class SerialManager:
             return
 
         self.stats["rx_count"] += 1
+
+        # Update data-liveness timestamp.  If data resumes after a timeout, trigger
+        # a re-bootstrap and an immediate stats broadcast so the UI reconnects.
+        now_mono = time.monotonic()
+        self._last_valid_rx_time = now_mono
+        if not self._arduino_data_ok:
+            self._arduino_data_ok = True
+            self.message_router.handle_transport_connection_change(True)
+            if self._asyncio_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._broadcast_stats(), self._asyncio_loop
+                )
+
         # Accumulate decoded messages; flushed together after decoder.decode() returns,
         # producing one asyncio schedule + one ROS2 publish loop per serial read batch.
         for tlv_type, tlv_len, tlv_data in tlv_list:
@@ -235,6 +256,8 @@ class SerialManager:
                 print(f"[Serial] Read error: {e}")
                 self.connected = False
                 self.stats["connected"] = False
+                self._arduino_data_ok = False
+                self._last_valid_rx_time = 0.0
                 self.message_router.handle_transport_connection_change(False)
                 if self.ser:
                     try:
@@ -270,6 +293,8 @@ class SerialManager:
                 print(f"[Serial] Send error: {e}")
                 self.connected = False
                 self.stats["connected"] = False
+                self._arduino_data_ok = False
+                self._last_valid_rx_time = 0.0
                 self.message_router.handle_transport_connection_change(False)
 
     def _send_heartbeat(self) -> None:
@@ -303,7 +328,9 @@ class SerialManager:
         await self.ws_manager.broadcast({
             "topic": "connection",
             "data": {
-                "serialConnected": self.stats["connected"],
+                # True only when the port is open AND valid TLV arrived within
+                # the last ARDUINO_DATA_TIMEOUT seconds.
+                "serialConnected": self.stats["connected"] and self._arduino_data_ok,
                 "port":       self.stats["port"],
                 "baud":       self.stats["baud"],
                 "rxCount":    self.stats["rx_count"],
@@ -341,9 +368,28 @@ class SerialManager:
 
         print("[Serial] Manager started (reader thread is hardware-driven).")
 
+        ARDUINO_DATA_TIMEOUT = 0.500  # seconds
+
         try:
             while self._running:
-                now = time.time()
+                now      = time.time()
+                now_mono = time.monotonic()
+
+                # ── Data-liveness watchdog ──────────────────────────────────
+                # If the port is open but no valid TLV arrived within the
+                # timeout window, treat the Arduino as unresponsive: clear the
+                # UI state immediately via serialConnected=False.
+                if (self.connected
+                        and self._arduino_data_ok
+                        and self._last_valid_rx_time > 0
+                        and now_mono - self._last_valid_rx_time > ARDUINO_DATA_TIMEOUT):
+                    print(
+                        f"[Serial] Arduino data timeout — no valid TLV for "
+                        f"{ARDUINO_DATA_TIMEOUT * 1000:.0f} ms"
+                    )
+                    self._arduino_data_ok = False
+                    self.message_router.handle_transport_connection_change(False)
+                    await self._broadcast_stats()
 
                 if now - self.last_stats_time >= STATS_INTERVAL:
                     await self._broadcast_stats()
@@ -518,7 +564,7 @@ class _ArduinoSim:
     Call update(dt) each tick, then read state to generate telemetry.
     """
 
-    FIRMWARE_VERSION = (0, 8, 0)
+    FIRMWARE_VERSION = (0, 9, 6)
 
     def __init__(self):
         self.state      = _SYS_INIT
@@ -1077,6 +1123,8 @@ class MockSerialManager:
         p.batteryMv   = int(_clamp(a.battery_mv + random.gauss(0, 8), 0, 65535))
         p.rail5vMv    = int(_clamp(a.rail5v_mv  + random.gauss(0, 3), 0, 65535))
         p.servoRailMv = 0
+        p.batteryType = 2
+        p.reserved = 0
         p.timestamp = a.uptime_us & 0xFFFFFFFF
         self._emit(SYS_POWER, p)
 

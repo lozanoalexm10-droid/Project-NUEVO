@@ -65,6 +65,7 @@ export interface SysPowerData {
   batteryMv: number
   rail5vMv: number
   servoRailMv: number
+  batteryType: number   // BATTERY_TYPE constant; 0 = not yet reported by firmware
   timestamp: number
 }
 
@@ -269,6 +270,7 @@ export interface VoltageData {
   batteryMv: number
   rail5vMv: number
   servoRailMv: number
+  batteryType: number   // 0 = unknown; populated once firmware sends it
 }
 
 export interface DCMotorItem extends DCStateMotorData {

@@ -183,6 +183,7 @@ function buildVoltage(sysPower: SysPowerData | null): VoltageData | null {
     batteryMv: int(sysPower.batteryMv),
     rail5vMv: int(sysPower.rail5vMv),
     servoRailMv: int(sysPower.servoRailMv),
+    batteryType: int(sysPower.batteryType ?? 0),
   }
 }
 
@@ -365,14 +366,19 @@ export const useRobotStore = create<RobotState>((set) => ({
           if (!imuReady) {
             update.imu = null
           }
-          if (system && (system.state === 3 || system.state === 4)) {
+          // Clear live streaming values whenever leaving RUNNING (state 2).
+          // This covers RUNNING→IDLE as well as RUNNING→FAULT/ESTOP.
+          const wasRunning = prevSystem?.state === 2
+          const isRunning  = system?.state === 2
+          if (wasRunning && !isRunning) {
             update.dcMotors = state.dcMotors.map((m) => ({
               ...m,
               status: m.status ? { ...m.status, mode: 0, pwmOutput: 0, velocity: 0 } : null,
             }))
-            update.steppers = state.steppers.map((s) =>
-              s ? { ...s, enabled: 0, currentSpeed: 0 } : null
-            )
+            update.steppers = state.steppers.map((s) => ({
+              ...s,
+              status: s.status ? { ...s.status, enabled: 0, currentSpeed: 0 } : null,
+            }))
             update.servo = state.servo
               ? {
                   ...state.servo,

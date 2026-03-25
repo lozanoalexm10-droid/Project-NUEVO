@@ -1,27 +1,31 @@
-import { useState } from 'react';
-import { motion } from 'motion/react';
-import { AlertTriangle, BatteryWarning, ChevronDown } from 'lucide-react';
+import { AlertTriangle, BatteryWarning } from 'lucide-react';
 import { useRobotStore } from '../store/robotStore';
 
 const VBAT_MIN_PRESENT = 2.0; // matches firmware VBAT_MIN_PRESENT_V
 
-type BatteryType = '10 Cell NiMH' | '3S LiPo' | '4S LiPo';
-
-const BATTERY_RANGES: Record<BatteryType, { min: number; max: number }> = {
-  '10 Cell NiMH': { min: 9, max: 15.5 },
-  '3S LiPo':      { min: 9.9, max: 12.6 },
-  '4S LiPo':      { min: 13.2, max: 16.8 },
+// Keyed by BATTERY_TYPE constant from firmware config.h
+// 0 = not yet reported; shown as "—"
+const BATTERY_INFO: Record<number, { label: string; min: number; max: number }> = {
+  1:  { label: '8-Cell NiMH',  min: 8.0,  max: 12.5 },
+  2:  { label: '10-Cell NiMH', min: 10.0, max: 15.5 },
+  3:  { label: '2S LiPo',      min: 6.6,  max: 8.6  },
+  4:  { label: '3S LiPo',      min: 9.9,  max: 12.9 },
+  5:  { label: '4S LiPo',      min: 13.2, max: 17.2 },
+  6:  { label: '5S LiPo',      min: 16.5, max: 21.5 },
+  7:  { label: '6S LiPo',      min: 19.8, max: 25.8 },
+  99: { label: 'Custom',        min: 6.0,  max: 24.0 },
 };
+const DEFAULT_RANGE = { min: 8.0, max: 15.5 };
 
 export function PowerSection() {
   const voltage = useRobotStore((s) => s.voltage);
-  const [batteryType, setBatteryType] = useState<BatteryType>('10 Cell NiMH');
-  const [showBatteryDropdown, setShowBatteryDropdown] = useState(false);
 
   const batteryVoltage = voltage ? voltage.batteryMv / 1000 : 0;
   const servoVoltage   = voltage ? voltage.servoRailMv / 1000 : 0;
 
-  const batteryRange = BATTERY_RANGES[batteryType];
+  const batteryInfo  = BATTERY_INFO[voltage?.batteryType ?? 0];
+  const batteryLabel = batteryInfo?.label ?? '—';
+  const batteryRange = batteryInfo ?? DEFAULT_RANGE;
   const servoRange = { min: 5, max: 10 };
 
   const getBatteryWarning = () => {
@@ -56,38 +60,10 @@ export function PowerSection() {
 
       <div className="relative">
         <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-semibold text-white">Power</h3>
-            {/* Battery Type Selector */}
-            <div className="relative">
-              <button
-                onClick={() => setShowBatteryDropdown(!showBatteryDropdown)}
-                className="w-full px-3 py-1 rounded-xl backdrop-blur-xl bg-white/10 border border-white/20 text-white text-sm flex items-center justify-between hover:bg-white/15 transition-all"
-              >
-                <span>{batteryType}</span>
-                <ChevronDown className="size-4" />
-              </button>
-
-              {showBatteryDropdown && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="absolute z-50 w-full mt-2 rounded-xl backdrop-blur-2xl bg-white/20 border border-white/30 shadow-2xl overflow-hidden"
-                >
-                  {(['10 Cell NiMH', '3S LiPo', '4S LiPo'] as BatteryType[]).map((type) => (
-                    <button
-                      key={type}
-                      onClick={() => {
-                        setBatteryType(type);
-                        setShowBatteryDropdown(false);
-                      }}
-                      className="w-full px-3 py-2 text-sm text-white hover:bg-white/20 transition-all text-left"
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </div>
+          <h3 className="text-lg font-semibold text-white">Power</h3>
+          <span className="px-3 py-1 rounded-xl bg-white/5 border border-white/15 text-sm text-white/60 font-mono select-none">
+            {batteryLabel}
+          </span>
         </div>
 
         {/* Voltage Section */}

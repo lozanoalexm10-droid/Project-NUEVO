@@ -3,7 +3,7 @@ import { useRobotStore } from '../store/robotStore';
 import { Modal } from './common/Modal';
 import { wsSend } from '../lib/wsSend';
 import figure8Image from '../assets/arrow.svg';
-import type { IMUData, MagCalStatusData, SensorRangeData } from '../lib/wsProtocol';
+import type { IMUData, MagCalStatusData, SensorRangeData, KinematicsData } from '../lib/wsProtocol';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -686,6 +686,194 @@ function RangePlaceholderCard({ sensorType, sensorId }: { sensorType: number; se
   );
 }
 
+// ─── Odometry card ───────────────────────────────────────────────────────────
+
+const MM_TO_IN = 1 / 25.4;
+
+function OdometryCard({ kinematics }: { kinematics: KinematicsData }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const trailRef  = useRef<{ x: number; y: number }[]>([]);
+  const [unit, setUnit] = useState<'mm' | 'in'>('mm');
+
+  // Convert mm → display unit
+  const cvt     = (mm: number)  => unit === 'in' ? mm * MM_TO_IN : mm;
+  const cvtSpd  = (mms: number) => unit === 'in' ? mms * MM_TO_IN : mms;
+  const distFmt = (mm: number)  => unit === 'in'
+    ? `${(mm * MM_TO_IN).toFixed(3)} in`
+    : `${mm.toFixed(1)} mm`;
+  const spdFmt  = (mms: number) => unit === 'in'
+    ? `${(mms * MM_TO_IN).toFixed(3)} in/s`
+    : `${mms.toFixed(1)} mm/s`;
+
+  useEffect(() => {
+    const trail = trailRef.current;
+    // Avoid duplicating identical positions
+    const last = trail[trail.length - 1];
+    if (!last || last.x !== kinematics.x || last.y !== kinematics.y) {
+      trail.push({ x: kinematics.x, y: kinematics.y });
+      if (trail.length > 1000) trail.shift();
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    if (!W || !H) return;
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    // Bounding box (always in mm — canvas coordinate space stays mm)
+    let minX = kinematics.x, maxX = kinematics.x;
+    let minY = kinematics.y, maxY = kinematics.y;
+    for (const p of trail) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    const spanX = Math.max(maxX - minX, 200); // min 200 mm span
+    const spanY = Math.max(maxY - minY, 200);
+    const span  = Math.max(spanX, spanY) * 1.3;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const scale = Math.min(W, H) / span;
+
+    const toScreen = (wx: number, wy: number) => ({
+      x: W / 2 + (wx - cx) * scale,
+      y: H / 2 - (wy - cy) * scale, // Y up in world → Y down in canvas
+    });
+
+    // Grid (lines always in mm; label converted to display unit)
+    const gridStep = Math.pow(10, Math.ceil(Math.log10(span / 4)));
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 0.75;
+    const gStartX = Math.floor((cx - span / 2) / gridStep) * gridStep;
+    const gStartY = Math.floor((cy - span / 2) / gridStep) * gridStep;
+    for (let gx = gStartX; gx < cx + span / 2; gx += gridStep) {
+      const sx = toScreen(gx, 0).x;
+      ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+    }
+    for (let gy = gStartY; gy < cy + span / 2; gy += gridStep) {
+      const sy = toScreen(0, gy).y;
+      ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+    }
+
+    // Origin cross
+    const O = toScreen(0, 0);
+    if (O.x >= 0 && O.x <= W && O.y >= 0 && O.y <= H) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.20)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(O.x - 6, O.y); ctx.lineTo(O.x + 6, O.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(O.x, O.y - 6); ctx.lineTo(O.x, O.y + 6); ctx.stroke();
+    }
+
+    // Trail
+    if (trail.length > 1) {
+      ctx.strokeStyle = 'rgba(96,165,250,0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const p0 = toScreen(trail[0].x, trail[0].y);
+      ctx.moveTo(p0.x, p0.y);
+      for (let i = 1; i < trail.length; i++) {
+        const p = toScreen(trail[i].x, trail[i].y);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+
+    // Robot position + heading arrow
+    const rp = toScreen(kinematics.x, kinematics.y);
+    const headingAngle = -kinematics.theta; // negate: world CCW → canvas CW
+    const arrowLen = Math.max(12, Math.min(28, span * scale * 0.12));
+    const nx = Math.cos(headingAngle), ny = Math.sin(headingAngle);
+    const tipX = rp.x + nx * arrowLen, tipY = rp.y + ny * arrowLen;
+
+    ctx.fillStyle = 'rgba(96,165,250,0.25)';
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(rp.x, rp.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(rp.x, rp.y);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    const hw = 4;
+    ctx.fillStyle = '#60a5fa';
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - nx * 8 + ny * hw, tipY - ny * 8 - nx * hw);
+    ctx.lineTo(tipX - nx * 8 - ny * hw, tipY - ny * 8 + nx * hw);
+    ctx.closePath();
+    ctx.fill();
+
+    // Grid scale label — shown in the selected display unit
+    const displayStep = cvt(gridStep);
+    const gridLabel = unit === 'in'
+      ? `${displayStep < 1 ? displayStep.toFixed(2) : displayStep.toFixed(1)} in`
+      : gridStep >= 1000 ? `${(gridStep / 1000).toFixed(0)} m` : `${gridStep.toFixed(0)} mm`;
+    ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`grid: ${gridLabel}`, W - 4, H - 3);
+  }, [kinematics, unit]);
+
+  const handleReset = () => {
+    trailRef.current = [];
+    wsSend('sys_odom_reset', {});
+  };
+
+  const thetaDeg = kinematics.theta * 180 / Math.PI;
+
+  return (
+    <Card title="Odometry">
+      {/* Unit toggle */}
+      <div className="flex justify-end mb-2">
+        <div className="flex rounded-full bg-white/10 border border-white/15 overflow-hidden">
+          {(['mm', 'in'] as const).map((u) => (
+            <button
+              key={u}
+              onClick={() => setUnit(u)}
+              className={`px-3 py-1 text-xs font-semibold transition-colors ${
+                unit === u ? 'bg-white/20 text-white' : 'text-white/40 hover:text-white/70'
+              }`}
+            >
+              {u}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <canvas ref={canvasRef} className="w-full rounded-lg mb-3" style={{ height: '180px', background: '#0a0a0a' }} />
+
+      <div className="space-y-1">
+        <CompactRow label="X"  value={distFmt(kinematics.x)} />
+        <CompactRow label="Y"  value={distFmt(kinematics.y)} />
+        <CompactRow label="θ"  value={`${thetaDeg.toFixed(1)}°`} />
+        <CompactRow label="Vx" value={spdFmt(kinematics.vx)} />
+        <CompactRow label="Vy" value={spdFmt(kinematics.vy)} />
+      </div>
+
+      <button
+        onClick={handleReset}
+        className="mt-3 w-full rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white/70 hover:bg-white/10 hover:text-white transition-all"
+      >
+        Reset Odometry
+      </button>
+    </Card>
+  );
+}
+
 // ─── Card shell ──────────────────────────────────────────────────────────────
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
@@ -728,6 +916,7 @@ export function SensorSection({ source }: SensorSectionProps) {
   const magCal       = useRobotStore((s) => s.magCal);
   const system       = useRobotStore((s) => s.system);
   const rangeSensors = useRobotStore((s) => s.rangeSensors);
+  const kinematics   = useRobotStore((s) => s.kinematics);
   const [calibrationOpen, setCalibrationOpen] = useState(false);
   const [calibrationPhase, setCalibrationPhase] = useState<CalibrationPhase>('preparing');
   const [calibrationError, setCalibrationError] = useState<string | null>(null);
@@ -737,9 +926,10 @@ export function SensorSection({ source }: SensorSectionProps) {
   const attachedSensors = system?.attachedSensors ?? 0;
   const imuConfigured = (attachedSensors & 0x01) !== 0;
   const imuReady = ((system?.runtimeFlags ?? 0) & 0x10) !== 0;
-  const hasIMU = imuConfigured || imu !== null || magCal !== null ||imuReady;    
+  const hasIMU = imuConfigured || imuReady;
   const hasUltrasonic = ((attachedSensors & 0x04) !== 0) || rangeSensors.length > 0;
-  const hasAny = hasIMU || hasUltrasonic;
+  const hasOdometry = kinematics !== null;
+  const hasAny = hasIMU || hasUltrasonic || hasOdometry;
 
   const resetCalibrationModal = () => {
     if (completionTimerRef.current) {
@@ -843,6 +1033,7 @@ export function SensorSection({ source }: SensorSectionProps) {
           onCalibrate={beginCalibration}
         />
       )}
+      {hasOdometry && <OdometryCard kinematics={kinematics!} />}
       {rangeSensors.map((sensor) => (
         <RangeCard key={sensor.sensorId} sensor={sensor} />
       ))}

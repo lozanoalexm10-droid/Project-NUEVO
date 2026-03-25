@@ -5,7 +5,7 @@ import os
 
 # Serial port configuration
 SERIAL_PORT = os.getenv("NUEVO_SERIAL_PORT", "/dev/ttyAMA0")  # RPi GPIO 14/15
-SERIAL_BAUD = int(os.getenv("NUEVO_SERIAL_BAUD", "250000"))   # Must match firmware RPI_BAUD_RATE
+SERIAL_BAUD = int(os.getenv("NUEVO_SERIAL_BAUD", "200000"))   # Must match firmware RPI_BAUD_RATE
 SERIAL_TIMEOUT = 0.1  # seconds (non-blocking)
 
 # Heartbeat configuration
