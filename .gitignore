@@ -15,6 +15,7 @@ openspec/
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+ros2_ws/src/rplidar_ros/
 .colcon_workspace
 *.colcon_workspace
 
@@ -189,6 +190,7 @@ secrets/
 *.tmp
 temp/
 tmp/
+get-docker.sh
 
 # Compressed files (keep intentional archives, ignore temp)
 *.zip.tmp
