@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from queue import Empty, SimpleQueue
 
 import rclpy
 from rclpy.node import Node
@@ -55,6 +56,7 @@ class BridgeNode(Node):
         super().__init__("bridge")
         self._runtime = runtime
         self._firmware_state_transitions = FirmwareStateTransitionCoordinator()
+        self._decoded_queue: SimpleQueue[dict] = SimpleQueue()
         qos = 10
 
         self._handlers = {
@@ -98,8 +100,12 @@ class BridgeNode(Node):
         self.create_subscription(IOSetLed, "/io_set_led", self._on_io_set_led, qos)
         self.create_subscription(IOSetNeopixel, "/io_set_neopixel", self._on_io_set_neopixel, qos)
         self.create_service(SetFirmwareState, "/set_firmware_state", self._on_set_firmware_state)
+        self.create_timer(0.005, self._drain_decoded_queue)
 
     def publish_decoded(self, msg_dict: dict) -> None:
+        self._decoded_queue.put(msg_dict)
+
+    def _publish_decoded_now(self, msg_dict: dict) -> None:
         topic = msg_dict["topic"]
         if topic == "sys_state":
             self._firmware_state_transitions.observe_system_state(msg_dict["data"])
@@ -109,6 +115,16 @@ class BridgeNode(Node):
         publisher, converter = handler
         stamp = self.get_clock().now().to_msg()
         publisher.publish(converter(msg_dict["data"], stamp))
+
+    def _drain_decoded_queue(self) -> None:
+        processed = 0
+        while processed < 64:
+            try:
+                msg_dict = self._decoded_queue.get_nowait()
+            except Empty:
+                return
+            self._publish_decoded_now(msg_dict)
+            processed += 1
 
     def _send(self, cmd: str, data: dict) -> bool:
         ok = self._runtime.handle_command(cmd, data)
