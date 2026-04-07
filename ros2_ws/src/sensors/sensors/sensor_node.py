@@ -6,7 +6,7 @@ from sensor_msgs.msg import LaserScan
 import numpy as np
 import matplotlib.pyplot as plt
 
-class ScanVisualizer(Node):
+class LidarSubscriber(Node):
     def __init__(self):
         super().__init__('scan_visualizer')
         self.subscription = self.create_subscription(
@@ -52,8 +52,7 @@ class SensorNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    # node = SensorNode()
-    node = ScanVisualizer()
+    node = LidarSubscriber()
     try:
         rclpy.spin(node)
     finally:

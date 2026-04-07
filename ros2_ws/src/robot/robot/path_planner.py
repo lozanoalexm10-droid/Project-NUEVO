@@ -15,6 +15,8 @@ from collections.abc import Callable
 import math
 import numpy as np
 
+from rclpy.node import Node
+
 # =============================================================================
 # Base class
 # =============================================================================
@@ -140,6 +142,7 @@ class PurePursuitPlanner(PathPlanner):
 
 
 
+<<<<<<< HEAD
 class PurePursuitPlanner2(PathPlanner):
     def __init__(self, lookahead_distance=150.0, max_linear_speed=50.0, goal_tolerance=20.0):
         self.Ld = lookahead_distance
@@ -192,9 +195,13 @@ class PurePursuitPlanner2(PathPlanner):
 
 # =============================================================================
 # APF
+=======
+# =============================================================================
+# Dynamic Window Approach (stub — activated when 2D lidar is ready)
+>>>>>>> 15d8b77 (updated with obstacle avoidance)
 # =============================================================================
 
-class APFPlanner(PathPlanner):
+class DWAPlanner():
     """
     Artificial Potential Fields planner.
 
@@ -209,6 +216,7 @@ class APFPlanner(PathPlanner):
 
     def __init__(
         self,
+<<<<<<< HEAD
         lookahead_dist: float = 200,
         max_linear: float = 200,
         max_angular: float = 2.0,
@@ -293,6 +301,208 @@ class APFPlanner(PathPlanner):
             if math.hypot(wx - x, wy - y) >= self._lookahead:
                 return wx, wy
         return waypoints[-1]
+=======
+        lookahead_dist: float = 0.20,
+        max_linear_speed: float = 0.50,
+        max_angular_speed: float = 1.0,
+        max_linear_acc: float = 0.50,
+        max_angular_acc: float = 1.0,
+        goal_tolerance: float = 0.10,
+        gains_of_costs: list[float] = [2.0, 0.1, 0.2, 0.2, 0.1],
+        dt: float = 0.1,
+        predict_time: float = 2.0,
+        predict_velocity_samples_resolution: list[float] = [0.1, 0.1],
+        robot_radius: float = 0.20,
+        obstacles_range: float = 3.0,
+        ttc_weight: float = 0.1,
+    ) -> None:
+        self.Ld = lookahead_dist
+        self.v_max = max_linear_speed  # m/s
+        self.w_max = max_angular_speed  # rad/s
+        self.dv_max = max_linear_acc 
+        self.dw_max = max_angular_acc
+        self.goal_tolerance = goal_tolerance
+
+        self.gain_goal, self.gain_heading, self.gain_obs_base, self.gain_speed, self.gain_path = gains_of_costs
+        self.ttc_weight = ttc_weight
+        self.dt = dt
+        self.predict_time = predict_time
+        self.sample_rx = predict_velocity_samples_resolution
+        self.robot_radius = robot_radius
+        self.obstacles_range = obstacles_range
+
+        self.current_index = 0
+
+    def _lookahead_point(self, path, x, y):
+        position = np.array([x, y])
+
+        for i in range(self.current_index, len(path)):
+            dist = np.linalg.norm(path[i,:] - position)
+            if dist >= self.Ld:
+                self.current_index = i
+                return path[i]
+
+        return path[-1]
+
+    def TargetReached(self, path, x, y):
+        goal_x, goal_y = path[-1]
+        dist_to_goal = np.hypot(goal_x - x, goal_y - y)
+        return (dist_to_goal < self.goal_tolerance) and (self.current_index==len(path)-1)
+
+    # Get the dynamic window based on current velocity and acceleration limits
+    def calc_dynamic_window(self, velocity):
+        vx, vy, w = velocity
+        v = np.hypot(vx, vy)
+
+        return [
+            max(-self.v_max, v - self.dv_max * self.dt), 
+            min(self.v_max, v + self.dv_max * self.dt), 
+            max(-self.w_max, w - self.dw_max * self.dt),
+            min(self.w_max, w + self.dw_max * self.dt)
+        ]
+    
+    def motion(self, pose, v, w, dt):
+        x, y, theta = pose
+        pose[0] += v * np.cos(theta) * self.dt
+        pose[1] += v * np.sin(theta) * self.dt
+        pose[2] += w * dt
+        return pose
+    
+    def predict_trajectory(self, pose, velocity):
+        vx, vy, w = velocity
+        v = np.hypot(vx, vy)
+        traj = [] # save the predicted trajectory for cost evaluation
+
+        time = 0
+        while time <= self.predict_time: # Incrementally predict the trajectory over the prediction horizon with different velocity commands
+            pose = self.motion(pose.copy(), v, w, self.dt) 
+            traj.append(pose.copy()) 
+            time += self.dt
+
+        return np.array(traj)
+
+    # calculate the cost of a trajectory based on distance to goal
+    def calc_goal_cost(self, traj, target):
+        dx = target[0] - traj[-1, 0]
+        dy = target[1] - traj[-1, 1]
+        return np.hypot(dx, dy)
+
+    # heading
+    def calc_heading_cost(self, traj, target, path):
+        dx = target[0] - traj[-1, 0]
+        dy = target[1] - traj[-1, 1]
+
+        # index = min(len(path)-2, self.current_index)
+        # dx = path[index+1, 0] - path[index, 0]
+        # dy = path[index+1, 1] - path[index, 1]
+
+        angle_to_goal = math.atan2(dy, dx)
+        error = angle_to_goal - traj[-1, 2]
+        return abs(math.atan2(math.sin(error), math.cos(error)))
+
+    # calculate the cost of a trajectory based on distance to obstacles, returning both the cost and the minimum distance to any obstacle
+    def calc_obstacle_cost(self, traj, obstacles):
+        if len(obstacles) == 0: # If there are no obstacles, the cost is zero and the minimum distance is infinite, indicating no risk of collision
+            return 0.0, float('inf')
+
+        min_dist = float('inf')
+
+        for i, point in enumerate(traj):
+            dists = np.linalg.norm(obstacles - point[:2], axis=1)
+            # min_dist = min(min_dist, np.min(dists))
+            if np.min(dists) < min_dist:
+                min_dist = np.min(dists)
+                ttc = i * self.dt # time-to-collision
+
+            if min_dist < self.robot_radius:
+                return float('inf'), min_dist # If the minimum distance to an obstacle is less than or equal to the robot's radius, return infinite cost to indicate a collision risk
+
+        # return 1.0 / (min_dist + ttc * self.ttc_weight + 1e-5), min_dist # cost is inversely proportional to the minimum distance to obstacles
+        sigma = 0.1
+        return np.exp(- ((min_dist + ttc * self.ttc_weight) ** 2) / (2 * sigma ** 2)), min_dist # Gaussian obstacle cost
+
+    def calc_path_cost(self, traj, path):
+        distances = [np.min(np.linalg.norm(path - p[:2], axis=1)) for p in traj]
+        return np.mean(distances)
+
+    def obstacle_activation(self, dist):
+        if dist > 4.0:
+            return 0.0
+        elif dist > 2.0:
+            return 0.5
+        else:
+            return 1.0
+
+    def pure_velocity_search(self, pose, target):
+        best_u_when_blocked = [0., 0.]
+        best_min_dist = 0.
+
+        for v in np.arange(-self.v_max, self.v_max+self.sample_rx[0], self.sample_rx[0]): # evaluate a set of linear velocity samples within the dynamic window
+            for w in np.arange(-self.w_max, self.w_max+self.sample_rx[1], self.sample_rx[1]):
+                traj = self.predict_trajectory(pose, np.array([v,0,w]))
+                obs_cost, min_dist = self.calc_obstacle_cost(traj, obstacles)
+                # find the best orientation with largest minimal distance with obstacles, we'll use it when the vehicle is blocked by obstacles.
+                if min_dist > best_min_dist:
+                    best_min_dist = min_dist
+                    best_u_when_blocked = [v, w]
+
+        return best_u_when_blocked[0], best_u_when_blocked[1]
+
+    def compute_velocity(self, path, pose, velocity, obstacles): # all parameters should be on world frame!!!
+        x, y, theta = pose
+        if len(obstacles) > 0:
+            obstacles = obstacles[np.linalg.norm(obstacles-np.float64([[x, y]]), axis=1)<self.obstacles_range,:]
+        vx, vy, w = velocity
+
+        if self.TargetReached(path, x, y):
+            return 0.0, 0.0  # Stop if within goal tolerance
+
+        target = self._lookahead_point(path, x, y) # pure pursuit target
+
+        # Obstacle avoidance
+        dw = self.calc_dynamic_window(velocity) # find the dynamic window based on current velocity and acceleration limits, which defines the feasible velocity space for the next control command, ensuring that the robot can safely decelerate to a stop if necessary
+
+        best_score = float('inf') 
+        best_u = [0.0, 0.0]
+        # best_u_when_blocked = [0., 0.]
+        # best_min_dist = 0.
+
+        # for v in np.linspace(dw[0], dw[1], self.sample_num): # evaluate a set of linear velocity samples within the dynamic window
+        #     for w in np.linspace(dw[2], dw[3], self.sample_num): # evaluate a set of angular velocity samples within the dynamic window
+        for v in np.arange(dw[0], dw[1]+self.sample_rx[0], self.sample_rx[0]): # evaluate a set of linear velocity samples within the dynamic window
+            for w in np.arange(dw[2], dw[3]+self.sample_rx[1], self.sample_rx[1]):
+                traj = self.predict_trajectory(pose, np.array([v,0,w]))
+                goal_cost = self.calc_goal_cost(traj, target)
+                heading_cost = self.calc_heading_cost(traj, target, path)
+                path_cost = self.calc_path_cost(traj, path)
+                obs_cost, min_dist = self.calc_obstacle_cost(traj, obstacles)
+                curvature = abs(w / (v + 1e-5))
+                # find the best orientation with largest minimal distance with obstacles, we'll use it when the vehicle is blocked by obstacles.
+                # if min_dist > best_min_dist:
+                #     best_min_dist = min_dist
+                #     best_u_when_blocked = [v, w]
+
+                obs_weight = self.gain_obs_base * self.obstacle_activation(min_dist) # according to the minimum distance to obstacles along the predicted trajectory, dynamically adjust the weight of the obstacle cost, increasing it as the robot gets closer to obstacles to prioritize safety in tight spaces while allowing more aggressive navigation when obstacles are farther away
+
+                score = (
+                    self.gain_goal * goal_cost +
+                    self.gain_heading * heading_cost +
+                    obs_weight * obs_cost +
+                    self.gain_speed * (self.v_max - v) + 
+                    self.gain_path * path_cost
+                )
+
+                if score < best_score:
+                    best_score = score
+                    best_u = [v, w]
+
+        best_v, best_w = best_u
+        if best_score == float('inf') or (abs(best_v) < 0.01 and abs(best_w) < 0.05):
+            # return best_u_when_blocked[0], best_u_when_blocked[1]   # rotate in place
+            return self.pure_velocity_search(pose, target)   # rotate in place
+        
+        return  best_v, best_w
+>>>>>>> 15d8b77 (updated with obstacle avoidance)
 
 
 # =============================================================================
