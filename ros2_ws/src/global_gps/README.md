@@ -105,8 +105,11 @@ ros2 launch global_gps global_gps.launch.py \
 ### Verify detections from any machine on the network
 
 ```bash
-# On any machine with ROS2 Jazzy on the same subnet:
-ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET ROS_LOCALHOST_ONLY=0 ros2 topic echo /global_gps/tag_detections
+# Quick test: connect to the Jetson TCP server directly (no ROS needed)
+# nc -v 192.168.8.120 7777   # should show JSON lines when markers are visible
+
+# Or from inside the robot container:
+ros2 topic echo /tag_detections
 ```
 
 ---
@@ -118,9 +121,8 @@ topic into the robot's local domain.
 
 ### Start robot_gps
 
-This node **must** run with subnet-wide DDS discovery enabled. Open a new
-terminal inside the robot's container and run it separately from the
-bridge/robot nodes:
+Open a terminal inside the robot's container and run it separately from
+the bridge/robot nodes:
 
 ```bash
 COMPOSE=ros2_ws/docker/docker-compose.rpi.yml
@@ -128,12 +130,11 @@ COMPOSE=ros2_ws/docker/docker-compose.rpi.yml
 docker compose -f $COMPOSE exec ros2_runtime bash
 source /opt/ros/jazzy/setup.bash
 source /ros2_ws/install/setup.bash
-ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET ROS_LOCALHOST_ONLY=0 ros2 run sensors robot_gps
+ros2 run sensors robot_gps
 ```
 
-> **Note (Jazzy):** `ROS_LOCALHOST_ONLY=0` alone is not sufficient in Jazzy —
-> you must also set `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET` or the node will
-> default to localhost-only discovery and never see the Jetson's topics.
+No special environment variables are needed.  The node connects to the
+Jetson's TCP server directly, which works through the lab WiFi NAT.
 
 Once running, the topic `/tag_detections` becomes available locally and other
 nodes (robot node, etc.) can subscribe to it with `ROS_LOCALHOST_ONLY=1` as
