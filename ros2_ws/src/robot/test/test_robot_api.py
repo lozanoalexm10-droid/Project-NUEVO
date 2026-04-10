@@ -280,25 +280,6 @@ class RobotApiTests(unittest.TestCase):
             },
         )
 
-    def test_odom_param_response_ignored_after_user_configures(self) -> None:
-        self.robot.set_odometry_parameters(left_motor_id=3, right_motor_id=4)
-
-        # Firmware echoes its own defaults (M1/M2) — must not overwrite user config.
-        firmware_echo = types.SimpleNamespace(
-            wheel_diameter_mm=70.0,
-            wheel_base_mm=300.0,
-            initial_theta_deg=0.0,
-            left_motor_number=1,
-            left_motor_dir_inverted=False,
-            right_motor_number=2,
-            right_motor_dir_inverted=True,
-        )
-        self.robot._on_odom_param_rsp(firmware_echo)
-
-        params = self.robot.get_odometry_parameters()
-        self.assertEqual(params["left_motor_number"], 3)
-        self.assertEqual(params["right_motor_number"], 4)
-
     def test_duplicate_odom_motor_pair_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be different"):
             self.robot.set_odometry_parameters(left_motor_id=2, right_motor_id=2)

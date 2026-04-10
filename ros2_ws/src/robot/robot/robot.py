@@ -183,7 +183,6 @@ class Robot:
         self._right_wheel_motor = self.DEFAULT_RIGHT_WHEEL_MOTOR
         self._left_wheel_dir_inverted = self.DEFAULT_LEFT_WHEEL_DIR_INVERTED
         self._right_wheel_dir_inverted = self.DEFAULT_RIGHT_WHEEL_DIR_INVERTED
-        self._odom_user_configured = False  # True once user has called set_odometry_parameters
         self._lock             = threading.Lock()
 
         # ── Cached firmware state ─────────────────────────────────────────────
@@ -346,11 +345,6 @@ class Robot:
             self._io_output_state = msg
 
     def _on_odom_param_rsp(self, msg: SysOdomParamRsp) -> None:
-        # Do not overwrite user-configured params with firmware echoes/defaults.
-        # Once set_odometry_parameters() has been called the Python-side config
-        # is authoritative; firmware may echo stale defaults on state transitions.
-        if self._odom_user_configured:
-            return
         self._apply_odom_param_snapshot(
             float(msg.wheel_diameter_mm),
             float(msg.wheel_base_mm),
@@ -1719,7 +1713,6 @@ class Robot:
             next_right_inverted,
         )
 
-        self._odom_user_configured = True
         self._publish_odom_params(snapshot)
 
     def _publish_odom_params(
