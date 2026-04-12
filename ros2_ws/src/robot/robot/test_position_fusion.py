@@ -46,7 +46,14 @@ GPS_OFFSET_X_MM   = 0.0
 GPS_OFFSET_Y_MM   = 0.0
 
 # ── Plot output path ──────────────────────────────────────────────────────────
-_PLOT_PATH = os.path.expanduser("~/position_fusion_test_result.png")
+# /host_home is the host $HOME bind-mounted in docker-compose.rpi.yml.
+# Fall back to the container's own home if the mount is absent (e.g. vm target).
+_HOST_HOME = "/host_home"
+_PLOT_PATH = (
+    os.path.join(_HOST_HOME, "position_fusion_test_result.png")
+    if os.path.isdir(_HOST_HOME)
+    else os.path.expanduser("~/position_fusion_test_result.png")
+)
 
 
 # =============================================================================

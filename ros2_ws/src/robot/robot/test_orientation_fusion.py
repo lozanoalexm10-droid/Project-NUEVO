@@ -43,9 +43,16 @@ FUSION_ALPHA      = 0.02     # complementary-filter magnetometer weight
 _CIRCLE_PERIOD_S  = 2.0 * math.pi * CIRCLE_RADIUS_MM / DRIVE_SPEED_MM_S
 _ANGULAR_DEG_S    = math.degrees(DRIVE_SPEED_MM_S / CIRCLE_RADIUS_MM)  # CCW positive
 
-# ── Plot output path (saved to disk so it works on headless RPi) ──────────────
+# ── Plot output path ──────────────────────────────────────────────────────────
+# /host_home is the host $HOME bind-mounted in docker-compose.rpi.yml.
+# Fall back to the container's own home if the mount is absent (e.g. vm target).
 import os
-_PLOT_PATH = os.path.expanduser("~/fusion_test_result.png")
+_HOST_HOME = "/host_home"
+_PLOT_PATH = (
+    os.path.join(_HOST_HOME, "fusion_test_result.png")
+    if os.path.isdir(_HOST_HOME)
+    else os.path.expanduser("~/fusion_test_result.png")
+)
 
 
 # =============================================================================
