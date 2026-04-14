@@ -216,6 +216,43 @@ class PositionFusionTests(unittest.TestCase):
         self.assertEqual(len(self.node.warnings), 0)
 
     # ------------------------------------------------------------------
+    # Tag body offset rotation (body frame: +x forward, +y left)
+    # ------------------------------------------------------------------
+
+    def test_tag_body_offset_forward_maps_to_world_x_at_zero_heading(self) -> None:
+        self.robot.set_tag_body_offset(100.0, 0.0)
+        self.robot._fused_theta = 0.0
+
+        self.robot._on_tag_detections(_make_tag(self.mod, x_m=0.5, y_m=0.3))
+
+        # At heading 0: a tag 100 mm forward of the body origin sits at +X.
+        # Robot center = tag position - rotated body offset.
+        self.assertAlmostEqual(self.robot._gps_x_mm, 400.0, places=4)
+        self.assertAlmostEqual(self.robot._gps_y_mm, 300.0, places=4)
+
+    def test_tag_body_offset_left_maps_to_negative_world_x_at_ninety_degrees(self) -> None:
+        self.robot.set_tag_body_offset(0.0, 100.0)
+        self.robot._fused_theta = math.pi / 2.0
+
+        self.robot._on_tag_detections(_make_tag(self.mod, x_m=0.5, y_m=0.3))
+
+        # At heading +90 deg: body +Y (left) rotates to world -X.
+        # Robot center = tag position - (-100, 0) = tag position + (100, 0).
+        self.assertAlmostEqual(self.robot._gps_x_mm, 600.0, places=4)
+        self.assertAlmostEqual(self.robot._gps_y_mm, 300.0, places=4)
+
+    def test_tag_body_offset_forward_maps_to_world_y_at_ninety_degrees(self) -> None:
+        self.robot.set_tag_body_offset(100.0, 0.0)
+        self.robot._fused_theta = math.pi / 2.0
+
+        self.robot._on_tag_detections(_make_tag(self.mod, x_m=0.5, y_m=0.3))
+
+        # At heading +90 deg: body +X (forward) rotates to world +Y.
+        # Robot center = tag position - (0, 100).
+        self.assertAlmostEqual(self.robot._gps_x_mm, 500.0, places=4)
+        self.assertAlmostEqual(self.robot._gps_y_mm, 200.0, places=4)
+
+    # ------------------------------------------------------------------
     # GPS active — complementary filter blending
     # ------------------------------------------------------------------
 
