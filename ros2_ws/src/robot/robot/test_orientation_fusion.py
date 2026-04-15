@@ -195,29 +195,15 @@ def _plot_results(rec: _Record) -> None:
     except Exception:
         pass  # stay with Agg if no display
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
     fig.suptitle(
         f"Complementary-filter fusion test  "
         f"(α={FUSION_ALPHA}, {SPIN_ANGLE_DEG:.0f}° in-place spin)",
         fontsize=12,
     )
 
-    # ── Panel 1: Trajectory coloured by fusion correction magnitude ──────────
+    # ── Panel 1: Heading over time ────────────────────────────────────────────
     ax = axes[0]
-    corr_abs = np.abs(correction)
-    sc = ax.scatter(x, y, c=corr_abs, cmap="plasma", s=6, zorder=2)
-    ax.plot(x[0], y[0], "go", markersize=8, label="start", zorder=3)
-    ax.plot(x[-1], y[-1], "rs", markersize=8, label="end", zorder=3)
-    fig.colorbar(sc, ax=ax, label="|fusion correction| (°)")
-    ax.set_xlabel("x (mm)")
-    ax.set_ylabel("y (mm)")
-    ax.set_title("Trajectory")
-    ax.set_aspect("equal")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # ── Panel 2: Heading over time ────────────────────────────────────────────
-    ax = axes[1]
     ax.plot(t, odom_deg,  lw=1.2, label="Odometry θ", color="steelblue")
     ax.plot(t, fused_deg, lw=1.5, label="Fused θ (CF)",  color="tomato",  linestyle="--")
     ax.set_xlabel("time (s)")
@@ -226,8 +212,8 @@ def _plot_results(rec: _Record) -> None:
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # ── Panel 3: Fusion correction over time ──────────────────────────────────
-    ax = axes[2]
+    # ── Panel 2: Fusion correction over time ──────────────────────────────────
+    ax = axes[1]
     ax.axhline(0, color="gray", lw=0.8, linestyle=":")
     ax.fill_between(t, correction, alpha=0.3, color="tomato")
     ax.plot(t, correction, lw=1.2, color="tomato", label="fused − odom")
