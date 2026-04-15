@@ -278,8 +278,8 @@ def _plot_results(rec: _Record) -> None:
     ax_err  = fig.add_subplot(gs[1, 1])
 
     fig.suptitle(
-        f"Position fusion — +Y drive {DRIVE_DISTANCE_MM:.0f} mm  "
-        f"(α={POS_FUSION_ALPHA}, offset=({GPS_OFFSET_X_MM:.0f}, {GPS_OFFSET_Y_MM:.0f}) mm)",
+        f"Position fusion — forward drive {DRIVE_DISTANCE_MM:.0f} mm  "
+        f"(α={POS_FUSION_ALPHA}, GPS aligned at first acquisition)",
         fontsize=12,
     )
     gps_patch = mpatches.Patch(color="green", alpha=0.3, label="GPS active")
