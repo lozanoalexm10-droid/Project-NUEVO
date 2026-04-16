@@ -63,9 +63,13 @@ def show_moving_leds(robot: Robot) -> None:
 
 def start_robot(robot: Robot) -> None:
     """Start the firmware and reset odometry before the main mission begins."""
-    robot.set_state(FirmwareState.RUNNING)
+    if not robot.set_state(FirmwareState.RUNNING):
+        print("[FSM] ERROR: failed to transition firmware to RUNNING. Check bridge / serial status.")
     robot.reset_odometry()
-    robot.wait_for_pose_update(timeout=0.2)
+    if not robot.wait_for_pose_update(timeout=0.2):
+        print("[FSM] WARNING: timed out waiting for a pose update after odometry reset.")
+    else:
+        print("[FSM] Pose update received after odometry reset.")
 
 
 def run(robot: Robot) -> None:
@@ -83,22 +87,27 @@ def run(robot: Robot) -> None:
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
             path_control_points = [ #Define your path control points here (x, y) in mm
+                # (0.0, 0.0),
+                # (0.0, 150.0),
+                # (0.0, 300.0),
+                # (0.0, 450.0),
+                # (0.0, 610.0),
+                # (150.0, 610.0),
+                # (300.0, 610.0),
+                # (450.0, 610.0),
+                # (610.0, 610.0),
+                # (610.0, 450.0),
+                # (610.0, 300.0),
+                # (610.0, 150.0),
+                # (610.0, 0.0),
+                # (450.0, 0.0),
+                # (300.0, 0.0),
+                # (150.0, 0.0),
+                # (0.0, 0.0),
                 (0.0, 0.0),
-                (0.0, 150.0),
-                (0.0, 300.0),
-                (0.0, 450.0),
                 (0.0, 610.0),
-                (150.0, 610.0),
-                (300.0, 610.0),
-                (450.0, 610.0),
                 (610.0, 610.0),
-                (610.0, 450.0),
-                (610.0, 300.0),
-                (610.0, 150.0),
                 (610.0, 0.0),
-                (450.0, 0.0),
-                (300.0, 0.0),
-                (150.0, 0.0),
                 (0.0, 0.0),
             ]    
             path1 = path_control_points
