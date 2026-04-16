@@ -83,11 +83,23 @@ def run(robot: Robot) -> None:
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
             path_control_points = [ #Define your path control points here (x, y) in mm
-                (0.0, 0.0), # 1st point
-                (0.0, 500.0), # 2nd point
-                (500.0, 500.0), # 3rd point
-                (500.0, 0.0), # 4th point
-                (0.0, 0.0), # 5th point
+                (0.0, 0.0),
+                (0.0, 150.0),
+                (0.0, 300.0),
+                (0.0, 450.0),
+                (0.0, 610.0),
+                (150.0, 610.0),
+                (300.0, 610.0),
+                (450.0, 610.0),
+                (610.0, 610.0),
+                (610.0, 450.0),
+                (610.0, 300.0),
+                (610.0, 150.0),
+                (610.0, 0.0),
+                (450.0, 0.0),
+                (300.0, 0.0),
+                (150.0, 0.0),
+                (0.0, 0.0),
             ]    
             path1 = path_control_points
             #path1 = densify_polyline(path_control_points, spacing=20.0)
@@ -111,39 +123,46 @@ def run(robot: Robot) -> None:
 
         elif state == "MOVING":
             show_moving_leds(robot)
-            """Start your code here"""
-            # Step 1: Get current pose, including current coordinates and heading angle in degrees 
-            # using robot.get_pose() function. Store the values in current_x, current_y, and current_theta_deg variables. 
 
-            # Step 2: Convert current_theta_deg to radians and store it in current_theta_rad variable.  
+            # Step 1: Get current pose
+            current_x, current_y, current_theta_deg = robot.get_pose()
 
-            # Step 3: Use the _advance_remaining_path() function to update the remaining_path variable 
-            # by advancing it based on the current position (current_x, current_y) and an advance radius(20.0) mm.
-            # This will take out the waypoints that are already passed (within 20mm of the current position), 
-            # effectively "advancing" the path as the robot moves.
+            # Step 2: Convert to radians
+            current_theta_rad = math.radians(current_theta_deg)
 
-            # Step 4: Use the _lookahead_point() function to calculate the current pursuit point 
-            # in your path, defined as (current_pursuit_x, current_pursuit_y)
+            # Step 3: Advance remaining path
+            remaining_path = robot._advance_remaining_path(remaining_path, current_x, current_y, advance_radius_mm=20.0)
 
-            # Step 5: Use the compute_velocity() function of the PurePursuitPlanner 
-            # to calculate the linear and angular velocity commands
+            # Step 4: Get lookahead point
+            current_pursuit_x, current_pursuit_y = planner1._lookahead_point(
+                current_x,
+                current_y,
+                waypoints=remaining_path,
+            )
 
-            # Step 6: Use the robot.set_velocity() function to send the velocity commands to the robot.
+            # Step 5: Compute velocity
+            linear_velocity_cmd, angular_velocity_cmd_rad_s = planner1.compute_velocity(
+                pose=(current_x, current_y, current_theta_rad),
+                waypoints=remaining_path,
+                max_linear=80.0,
+            )
 
-            # Step 7: Check if the current target point is reached using the 
-            # CurrentTargetReached() function of the PurePursuitPlanner.
-            # Just uncomment the following lines to enable the print statements.
-            """if planner1.CurrentTargetReached(current_pursuit_x, current_pursuit_y, current_x, current_y): 
+            # Step 6: Send velocity commands
+            robot.set_velocity(
+                linear_velocity_cmd,
+                math.degrees(angular_velocity_cmd_rad_s),
+            )
+
+            # Step 7: Check if target reached
+            if planner1.CurrentTargetReached(current_pursuit_x, current_pursuit_y, current_x, current_y):
                 print("MOVING: Target reached! Stopping.")
                 robot.stop()
                 print("[FSM] IDLE")
-                state = "IDLE"       """        
-            
-            # Step 8: Print the current pose and current pursuit point to the console for debugging purposes.
-            # Just uncomment the following lines to enable the print statements.
-            #print(f"Current Pose: ({current_x:.1f}, {current_y:.1f}, {current_theta_deg:.1f} deg)")
-            #print(f"Current Pursuit Point: ({current_pursuit_x:.1f}, {current_pursuit_y:.1f})")            
-            print("Finish your code in Task 2") # Delete this line after you finish Task 2
+                state = "IDLE"
+
+            # Step 8: Debug prints
+            print(f"Current Pose: ({current_x:.1f}, {current_y:.1f}, {current_theta_deg:.1f} deg)")
+            print(f"Current Pursuit Point: ({current_pursuit_x:.1f}, {current_pursuit_y:.1f})")
             
         # FSM refresh rate control
         next_tick += period
