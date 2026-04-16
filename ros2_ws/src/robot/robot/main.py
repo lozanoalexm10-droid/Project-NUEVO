@@ -28,7 +28,7 @@ import math
 
 POSITION_UNIT = Unit.MM
 WHEEL_DIAMETER = 74.0
-WHEEL_BASE = 333.0
+WHEEL_BASE = 350
 INITIAL_THETA_DEG = 90.0
 
 LEFT_WHEEL_MOTOR = Motor.DC_M1
@@ -87,31 +87,46 @@ def run(robot: Robot) -> None:
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
             path_control_points = [ #Define your path control points here (x, y) in mm
-                # (0.0, 0.0),
-                # (0.0, 150.0),
-                # (0.0, 300.0),
-                # (0.0, 450.0),
-                # (0.0, 610.0),
-                # (150.0, 610.0),
-                # (300.0, 610.0),
-                # (450.0, 610.0),
-                # (610.0, 610.0),
-                # (610.0, 450.0),
-                # (610.0, 300.0),
-                # (610.0, 150.0),
-                # (610.0, 0.0),
-                # (450.0, 0.0),
-                # (300.0, 0.0),
-                # (150.0, 0.0),
-                # (0.0, 0.0),
-                (0.0, 0.0),
-                (0.0, 610.0),
-                (610.0, 610.0),
-                (610.0, 0.0),
-                (0.0, 0.0),
+            # Square Path with 610mm sides
+            # (0.0, 0.0),
+            # (0.0, 150.0),
+            # (0.0, 300.0),
+            # (0.0, 450.0),
+            # (0.0, 610.0),
+
+            # (150.0, 610.0),
+            # (300.0, 610.0),
+            # (450.0, 610.0),
+            # (610.0, 610.0),
+
+            # (610.0, 450.0),
+            # (610.0, 300.0),
+            # (610.0, 150.0),
+            # (610.0, 0.0),
+
+            # (450.0, 0.0),
+            # (300.0, 0.0),
+            # (150.0, 0.0),
+            # (0.0, 0.0),
+
+            # Venue Path
+            (0.0, 0.0),        # Start
+
+            (0.0, 3660.0),     # go right 6 tiles
+            (610.0, 3660.0),     # Down 1
+
+            (610.0, 610.0),    # Go left 5 tiles (deal with bump here)
+            (1565.0, 610.0),    # Go down 1.5 (in front of obstacle field)
+
+            (1565.0, 3660.0),  # go right through obstacle field
+
+            (2530.0, 3660.0),   # Go Down 1.5
+            (2530.0, 610.0),   # Go Left 5 tiles
+
+            (2225.0, 305.0),    # near task zone
             ]    
-            path1 = path_control_points
-            #path1 = densify_polyline(path_control_points, spacing=20.0)
+            #path1 = path_control_points
+            path1 = densify_polyline(path_control_points, spacing=20.0)
             remaining_path = path1.copy() 
             print("Path is ready, Entering IDLE state.")
             state = "IDLE"
@@ -120,7 +135,7 @@ def run(robot: Robot) -> None:
             show_idle_leds(robot)
             print("[FSM] IDLE - Press BTN_1 to enter MOVING state.")
             if robot.get_button(Button.BTN_1):
-                LOOKAHEAD_DIST = 100.0 # Lookahead distance in mm (adjust as needed)
+                LOOKAHEAD_DIST = 50.0 # Lookahead distance in mm (adjust as needed)
                 planner1 = PurePursuitPlanner(
                     lookahead_dist=LOOKAHEAD_DIST, 
                     max_angular=1.5, # Max angular velocity in rad/s (adjust as needed)
@@ -140,7 +155,7 @@ def run(robot: Robot) -> None:
             current_theta_rad = math.radians(current_theta_deg)
 
             # Step 3: Advance remaining path
-            remaining_path = robot._advance_remaining_path(remaining_path, current_x, current_y, advance_radius_mm=20.0)
+            remaining_path = robot._advance_remaining_path(remaining_path, current_x, current_y, LOOKAHEAD_DIST)
 
             # Step 4: Get lookahead point
             current_pursuit_x, current_pursuit_y = planner1._lookahead_point(
