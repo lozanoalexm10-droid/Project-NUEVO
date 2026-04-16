@@ -200,6 +200,7 @@ class Robot:
         self._imu:        SensorImu      = None
         self._pose:    tuple = (0.0, 0.0, 0.0)  # x_mm, y_mm, theta_rad
         self._vel:     tuple = (0.0, 0.0, 0.0)  # vx_mm_s, vy_mm_s, vtheta_rad_s
+        self._pose_seq: int = 0
         self._buttons: int   = 0
         self._limits:  int   = 0
         self._button_edges: int = 0
@@ -209,7 +210,7 @@ class Robot:
         self._obstacle_provider: Callable[[], list[tuple[float, float]]] | None = None
 
         # ── Events ────────────────────────────────────────────────────────────
-        self._pose_event: threading.Event = threading.Event()
+        self._pose_condition: threading.Condition = threading.Condition(self._lock)
         self._button_events: dict[int, threading.Event] = {}
         self._limit_events:  dict[int, threading.Event] = {}
 
@@ -312,11 +313,11 @@ class Robot:
             self._imu = msg
 
     def _on_kinematics(self, msg: SensorKinematics) -> None:
-        with self._lock:
+        with self._pose_condition:
             self._pose = (msg.x, msg.y, msg.theta)
             self._vel  = (msg.vx, msg.vy, msg.v_theta)
-        self._pose_event.set()
-        self._pose_event.clear()
+            self._pose_seq += 1
+            self._pose_condition.notify_all()
 
     def _on_io_input(self, msg: IOInputState) -> None:
         with self._lock:
@@ -529,7 +530,20 @@ class Robot:
 
     def wait_for_pose_update(self, timeout: float = None) -> bool:
         """Block until the next /sensor_kinematics message arrives (~25 Hz)."""
-        return self._pose_event.wait(timeout=timeout)
+        with self._pose_condition:
+            target_seq = self._pose_seq
+            if timeout is None:
+                while self._pose_seq == target_seq:
+                    self._pose_condition.wait()
+                return True
+
+            end_time = time.monotonic() + timeout
+            while self._pose_seq == target_seq:
+                remaining = end_time - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._pose_condition.wait(timeout=remaining)
+            return True
 
     def set_obstacles(self, obstacles: list[tuple[float, float]]) -> None:
         """
