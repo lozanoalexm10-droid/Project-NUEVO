@@ -8,6 +8,10 @@ from enum import Enum, IntEnum
 
 from rclpy.node import Node
 
+import time as _time
+
+from robot.sensor_fusion import ComplementaryFilter, SensorFusion
+
 from bridge_interfaces.msg import (
     DCEnable,
     DCHome,
@@ -44,6 +48,7 @@ from bridge_interfaces.msg import (
     SystemPower,
     SystemState,
     IOInputState,
+    TagDetectionArray,
 )
 from bridge_interfaces.srv import SetFirmwareState
 
@@ -148,12 +153,20 @@ class Robot:
         DEFAULT_LEFT_WHEEL_MOTOR  = 1
         DEFAULT_RIGHT_WHEEL_MOTOR = 2
         INITIAL_THETA_DEG = 90.0
+        IMU_Z_DOWN        = False  (Z-axis points up, flat side of chip faces up)
+
+    If the IMU is mounted upside-down (Z-axis pointing toward the ground), set
+    IMU_Z_DOWN = True or call set_imu_z_down(True).  The Fusion AHRS on the
+    Arduino will converge to an inverted-attitude quaternion, causing the
+    extracted yaw to be negated; this flag corrects that sign flip in software.
+    The IMU must be re-calibrated after physically flipping the sensor.
     """
 
     WHEEL_DIAMETER_MM: float = 74.0
     WHEEL_BASE_MM:     float = 333.0
     ENCODER_PPR:       int   = 1440
     INITIAL_THETA_DEG: float = 90.0
+    IMU_Z_DOWN:        bool  = False
     DEFAULT_LEFT_WHEEL_MOTOR:  int = int(Motor.DC_M1)
     DEFAULT_RIGHT_WHEEL_MOTOR: int = int(Motor.DC_M2)
     DEFAULT_LEFT_WHEEL_DIR_INVERTED: bool = False
@@ -198,9 +211,35 @@ class Robot:
         self._servo_state: ServoStateAll = None
         self._io_output_state: IOOutputState = None
         self._imu:        SensorImu      = None
-        self._pose:    tuple = (0.0, 0.0, 0.0)  # x_mm, y_mm, theta_rad
+        self._imu_z_down:          bool        = self.IMU_Z_DOWN
+        self._ahrs_heading:        float | None = None   # absolute heading from AHRS (rad)
+        self._ahrs_heading_offset: float      = 0.0    # AHRS heading at last reset_odometry()
+        self._ahrs_accumulated:    float      = math.radians(self.INITIAL_THETA_DEG)  # incrementally unwrapped relative heading (rad)
+        self._ahrs_prev_wrapped:   float | None = None  # previous wrap(heading-offset); None = not yet seeded
+        self._odom_reset_pending:  bool       = False  # True between reset_odometry() call and firmware-confirmed reset tick
+        self._fused_theta:        float      = math.radians(self.INITIAL_THETA_DEG)  # fusion strategy output (rad)
+        self._fusion: SensorFusion           = ComplementaryFilter(alpha=0.02)
+        self._pose:    tuple = (0.0, 0.0, 0.0)  # x_mm, y_mm, theta_rad (raw odometry)
+        # ── GPS position fusion ───────────────────────────────────────────────
+        self._tracked_tag_id:    int         = -1    # tag to track (-1 = any)
+        self._gps_x_mm:          float       =  0.0  # latest GPS x in mm (arena frame)
+        self._gps_y_mm:          float       =   0.0 # latest GPS y in mm (arena frame)
+        self._gps_last_time:     float       = 0.0   # monotonic timestamp of last GPS fix
+        self._gps_timeout_s:     float       = 1.0   # seconds before GPS is treated as stale
+        self._gps_offset_x_mm:   float       = 304.8   # GPS frame → arena frame translation x
+        self._gps_offset_y_mm:   float       = 1524   # GPS frame → arena frame translation y
+        self._tag_body_offset_x_mm: float    = 0.0   # tag position in robot body frame x (mm, forward)
+        self._tag_body_offset_y_mm: float    = 0.0   # tag position in robot body frame y (mm, left)
+        self._fused_x_mm:        float       = 0.0   # complementary-filter x output (mm)
+        self._fused_y_mm:        float       = 0.0   # complementary-filter y output (mm)
+        self._pos_fusion_alpha:  float       = 0.10  # GPS weight [0 = all odometry, 1 = all GPS]
+        # ── GPS-anchored dead reckoning ───────────────────────────────────────
+        self._anchor_x_mm:       float       = 0.0   # last GPS-corrected absolute x (mm)
+        self._anchor_y_mm:       float       = 0.0   # last GPS-corrected absolute y (mm)
+        self._odom_x_at_anchor:  float       = 0.0   # raw odometry x when anchor was set
+        self._odom_y_at_anchor:  float       = 0.0   # raw odometry y when anchor was set
+        self._anchor_valid:      bool        = False  # True once first GPS fix has been received
         self._vel:     tuple = (0.0, 0.0, 0.0)  # vx_mm_s, vy_mm_s, vtheta_rad_s
-        self._pose_seq: int = 0
         self._buttons: int   = 0
         self._limits:  int   = 0
         self._button_edges: int = 0
@@ -210,7 +249,8 @@ class Robot:
         self._obstacle_provider: Callable[[], list[tuple[float, float]]] | None = None
 
         # ── Events ────────────────────────────────────────────────────────────
-        self._pose_condition: threading.Condition = threading.Condition(self._lock)
+        self._pose_event: threading.Event = threading.Event()
+        self._odom_reset_event: threading.Event = threading.Event()
         self._button_events: dict[int, threading.Event] = {}
         self._limit_events:  dict[int, threading.Event] = {}
 
@@ -240,6 +280,7 @@ class Robot:
         self._odom_param_req_pub = node.create_publisher(SysOdomParamReq, '/sys_odom_param_req', 10)
         self._odom_param_pub = node.create_publisher(SysOdomParamSet, '/sys_odom_param_set', 10)
         self._odom_pub     = node.create_publisher(SysOdomReset,   '/sys_odom_reset',   10)
+        # self._fused_kin_pub = node.create_publisher(SensorKinematics, '/fused_kinematics', 10)
 
         # ── Subscriptions ─────────────────────────────────────────────────────
         node.create_subscription(SystemState,      '/sys_state',         self._on_sys_state,   10)
@@ -256,7 +297,8 @@ class Robot:
         node.create_subscription(SensorKinematics, '/sensor_kinematics', self._on_kinematics,  10)
         node.create_subscription(IOInputState,     '/io_input_state',    self._on_io_input,    10)
         node.create_subscription(IOOutputState,    '/io_output_state',   self._on_io_output,   10)
-        node.create_subscription(SysOdomParamRsp,  '/sys_odom_param_rsp', self._on_odom_param_rsp, 10)
+        node.create_subscription(SysOdomParamRsp,  '/sys_odom_param_rsp', self._on_odom_param_rsp,    10)
+        node.create_subscription(TagDetectionArray, '/tag_detections',   self._on_tag_detections,    10)
 
         # ── Service clients ───────────────────────────────────────────────────
         self._set_state_client = node.create_client(SetFirmwareState, '/set_firmware_state')
@@ -311,13 +353,196 @@ class Robot:
     def _on_imu(self, msg: SensorImu) -> None:
         with self._lock:
             self._imu = msg
+            if msg.mag_calibrated:
+                # TODO: use the gravity vector from the AMRS to allow mouting of the IMU in any orientation, not just flat with Z up or down.  This would also allow auto-detection of the Z-down configuration without needing a user-set flag.
+                
+                # Use the Madgwick AHRS quaternion (accel + gyro + mag, 9-axis).
+                # The firmware runs the Fusion library AHRS which integrates all
+                # three sensor axes and applies gyroscope bias correction; the
+                # resulting yaw is a tilt-compensated, drift-corrected heading.
+                # Convention: NWU (North-West-Up), yaw via ZYX Euler extraction.
+                qw = float(msg.quat_w)
+                qx = float(msg.quat_x)
+                qy = float(msg.quat_y)
+                qz = float(msg.quat_z)
+                yaw = math.atan2(
+                    2.0 * (qw * qz + qx * qy),
+                    1.0 - 2.0 * (qy * qy + qz * qz),
+                )
+                # When the sensor is mounted upside-down (Z toward ground) the
+                # AHRS converges to an inverted-attitude quaternion, making the
+                # extracted yaw the negative of the physical heading.
+                self._ahrs_heading = -yaw if self._imu_z_down else yaw
+            else:
+                # Calibration lost or not yet acquired — clear the heading so
+                # _on_kinematics falls back to pure odometry rather than
+                # continuing to fuse against a stale absolute reference.
+                # Also clear _ahrs_prev_wrapped so that when calibration is
+                # regained the accumulator re-seeds from odometry rather than
+                # computing a delta from a pre-loss value (which may have
+                # jumped when the Madgwick filter reinitialised).
+                self._ahrs_heading = None
+                self._ahrs_prev_wrapped = None
 
     def _on_kinematics(self, msg: SensorKinematics) -> None:
-        with self._pose_condition:
+        with self._lock:
             self._pose = (msg.x, msg.y, msg.theta)
             self._vel  = (msg.vx, msg.vy, msg.v_theta)
-            self._pose_seq += 1
-            self._pose_condition.notify_all()
+
+            # Orientation fusion: delegate to the active strategy.
+            #
+            # The AHRS yaw is an absolute, bounded heading (wrapped to [-π, π]).
+            # The firmware odometry (msg.theta) is unbounded — it accumulates past
+            # 2π for multiple rotations.  Passing the bounded AHRS directly to the
+            # filter causes wrap() discontinuities every half-revolution when
+            # |ahrs - odom| crosses ±π.
+            #
+            # Fix: incrementally unwrap the relative AHRS heading so it accumulates
+            # in the same unbounded frame as odometry.  Their difference then stays
+            # small, and wrap() in the filter is never discontinuous.
+            if self._ahrs_heading is not None:
+                # If a reset is pending, wait for the firmware-confirmed tick
+                # where msg.theta has snapped to initial_theta_deg before
+                # capturing the AHRS zero reference.  Until then, suppress
+                # AHRS fusion so the filter sees only raw odometry.
+                _initial_theta_rad = math.radians(self._initial_theta_deg)
+                if self._odom_reset_pending:
+                    if abs(math.atan2(
+                        math.sin(msg.theta - _initial_theta_rad),
+                        math.cos(msg.theta - _initial_theta_rad),
+                    )) < math.radians(5.0):
+                        # Firmware confirmed the reset — capture AHRS offset
+                        # at this exact tick so both zero references share the
+                        # same physical timestamp.
+                        self._ahrs_heading_offset = self._ahrs_heading
+                        self._ahrs_prev_wrapped   = 0.0  # relative heading is 0 by definition
+                        self._odom_reset_pending  = False
+                        self._odom_reset_event.set()
+                    # Still pending: skip AHRS fusion this tick
+                    relative_ahrs = None
+                else:
+                    curr_wrapped = math.atan2(
+                        math.sin(self._ahrs_heading - self._ahrs_heading_offset),
+                        math.cos(self._ahrs_heading - self._ahrs_heading_offset),
+                    )
+                    if self._ahrs_prev_wrapped is None:
+                        # First AHRS sample since startup or after calibration
+                        # loss: seed the accumulator at the current odometry
+                        # level so the filter sees zero initial discrepancy.
+                        # Using msg.theta (not curr_wrapped) keeps both signals
+                        # in the same unbounded reference frame — AHRS then
+                        # contributes only incremental corrections, never an
+                        # absolute compass jump.
+                        self._ahrs_accumulated = msg.theta
+                    else:
+                        delta = math.atan2(
+                            math.sin(curr_wrapped - self._ahrs_prev_wrapped),
+                            math.cos(curr_wrapped - self._ahrs_prev_wrapped),
+                        )
+                        self._ahrs_accumulated += delta
+                    self._ahrs_prev_wrapped = curr_wrapped
+                    relative_ahrs = self._ahrs_accumulated
+            else:
+                # AHRS not calibrated — if a reset is pending, check whether
+                # the firmware theta has returned to initial_theta so we can
+                # clear the pending flag (no AHRS offset to capture yet).
+                if self._odom_reset_pending:
+                    _initial_theta_rad = math.radians(self._initial_theta_deg)
+                    if abs(math.atan2(
+                        math.sin(msg.theta - _initial_theta_rad),
+                        math.cos(msg.theta - _initial_theta_rad),
+                    )) < math.radians(5.0):
+                        self._odom_reset_pending = False
+                        self._odom_reset_event.set()
+                relative_ahrs = None
+            linear_vel  = math.hypot(float(msg.vx), float(msg.vy))
+            angular_vel = float(msg.v_theta)
+            self._fused_theta = self._fusion.update(
+                odom_theta  = msg.theta,
+                mag_heading = relative_ahrs,
+                linear_vel  = linear_vel,
+                angular_vel = angular_vel,
+            )
+
+            # Position fusion: complementary filter blending odometry with GPS.
+            # When GPS is available, anchor the absolute position and update the
+            # dead-reckoning baseline. When GPS is stale, project forward from the
+            # last anchor using the odometry delta to avoid raw-odometry drift.
+            gps_fresh = (
+                self._gps_last_time > 0.0
+                and (_time.monotonic() - self._gps_last_time) < self._gps_timeout_s
+            )
+            if gps_fresh:
+                diff_x = self._gps_x_mm - msg.x
+                diff_y = self._gps_y_mm - msg.y
+                self._fused_x_mm = msg.x + self._pos_fusion_alpha * diff_x
+                self._fused_y_mm = msg.y + self._pos_fusion_alpha * diff_y
+                # Update anchor so dead reckoning continues from the corrected position.
+                self._anchor_x_mm      = self._fused_x_mm
+                self._anchor_y_mm      = self._fused_y_mm
+                self._odom_x_at_anchor = msg.x
+                self._odom_y_at_anchor = msg.y
+                self._anchor_valid     = True
+            elif self._anchor_valid:
+                # GPS stale but we have a prior fix: project from anchor using
+                # odometry delta so drift only accumulates since the last fix.
+                self._fused_x_mm = self._anchor_x_mm + (msg.x - self._odom_x_at_anchor)
+                self._fused_y_mm = self._anchor_y_mm + (msg.y - self._odom_y_at_anchor)
+            else:
+                # No GPS fix ever received; fall back to raw odometry.
+                self._fused_x_mm = msg.x
+                self._fused_y_mm = msg.y
+
+        self._pose_event.set()
+        self._pose_event.clear()
+
+        # # Publish fused state so external tools (RViz, student nodes, etc.)
+        # # receive corrected position and heading on /fused_kinematics without
+        # # needing to subscribe to the raw /sensor_kinematics themselves.
+        # fused_msg = SensorKinematics()
+        # fused_msg.header    = getattr(msg, 'header', None)
+        # fused_msg.vx        = msg.vx
+        # fused_msg.vy        = msg.vy
+        # fused_msg.v_theta   = msg.v_theta
+        # fused_msg.timestamp = getattr(msg, 'timestamp', 0)
+        # with self._lock:
+        #     fused_msg.x     = self._fused_x_mm
+        #     fused_msg.y     = self._fused_y_mm
+        #     fused_msg.theta = self._fused_theta
+        # self._fused_kin_pub.publish(fused_msg)
+
+    def _on_tag_detections(self, msg: TagDetectionArray) -> None:
+        """Cache GPS position from the tracked ArUco tag (metres → mm, arena frame)."""
+        for det in msg.detections:
+            if self._tracked_tag_id == -1 or det.tag_id == self._tracked_tag_id:
+                with self._lock:
+                    warn_offset = (
+                        self._gps_offset_x_mm == 0.0 and self._gps_offset_y_mm == 0.0
+                    )
+                    # Update GPS state unconditionally — the warning is advisory only
+                    # and must not gate the position update.
+                    tag_x = float(det.x) * 1000.0 + self._gps_offset_x_mm
+                    tag_y = float(det.y) * 1000.0 + self._gps_offset_y_mm
+                    # Correct for tag not being at the robot body origin.
+                    # Rotate the body-frame tag offset into arena frame and subtract
+                    # so _gps_x/y_mm reflect the robot centre, not the tag centre.
+                    cos_t = math.cos(self._fused_theta)
+                    sin_t = math.sin(self._fused_theta)
+                    bx = self._tag_body_offset_x_mm
+                    by = self._tag_body_offset_y_mm
+                    self._gps_x_mm     = tag_x - (cos_t * bx - sin_t * by)
+                    self._gps_y_mm     = tag_y - (sin_t * bx + cos_t * by)
+                    self._gps_last_time = _time.monotonic()
+                # Log outside the lock so a slow or failing logger call cannot
+                # block kinematics callbacks that also acquire the lock.
+                if warn_offset:
+                    self._node.get_logger().warn(
+                        'GPS offset is (0, 0) — arena-frame correction has not been '
+                        'configured. Call set_gps_offset() with the measured offset '
+                        'between the GPS frame and the arena corner origin.',
+                        throttle_duration_sec=10.0,
+                    )
+                break
 
     def _on_io_input(self, msg: IOInputState) -> None:
         with self._lock:
@@ -397,7 +622,31 @@ class Robot:
         return self.set_state(FirmwareState.IDLE)
 
     def reset_odometry(self) -> None:
-        """Reset firmware odometry pose to (0, 0, current initial theta)."""
+        """Reset firmware odometry pose to (0, 0, initial_theta).
+
+        Captures the current AHRS heading as the new zero reference and
+        initialises the relative-AHRS accumulator to match the firmware's
+        initial_theta so that the fusion filter sees no spurious discrepancy
+        between odometry and AHRS heading immediately after reset.
+
+        After this call, get_fused_orientation() and get_pose()[2] will both
+        report initial_theta (default 90°), not 0°.
+        """
+        with self._lock:
+            # Do NOT capture _ahrs_heading_offset here.  The firmware will
+            # only process this reset after UART round-trip latency (~5-40 ms).
+            # Capturing the AHRS heading now and blending it with the
+            # not-yet-reset odometry produces a misaligned zero reference.
+            #
+            # Instead, set _odom_reset_pending = True so that _on_kinematics
+            # captures the AHRS offset on the first tick where msg.theta has
+            # already snapped back to initial_theta (i.e. firmware confirmed
+            # the reset).  That way both zero references share exactly the
+            # same physical timestamp.
+            self._ahrs_accumulated  = math.radians(self._initial_theta_deg)
+            self._ahrs_prev_wrapped = None
+            self._odom_reset_pending = True
+            self._odom_reset_event.clear()
         msg = SysOdomReset()
         msg.flags = 0
         self._odom_pub.publish(msg)
@@ -515,9 +764,16 @@ class Robot:
     # =========================================================================
 
     def get_pose(self) -> tuple[float, float, float]:
-        """Return (x, y, theta_deg) in user units and degrees."""
-        with self._lock:
-            x_mm, y_mm, theta_rad = self._pose
+        """
+        Return the current pose as (x, y, theta_deg) in user units and degrees.
+
+        x and y are GPS-fused when a recent GPS fix is available, otherwise
+        raw wheel-odometry position.
+        theta is the sensor-fused heading (AHRS quaternion blended with wheel
+        odometry via the active fusion strategy). This is the same value
+        returned by get_fused_orientation().
+        """
+        x_mm, y_mm, theta_rad = self._get_pose_mm()
         s = self._unit.value
         return x_mm / s, y_mm / s, math.degrees(theta_rad)
 
@@ -530,20 +786,19 @@ class Robot:
 
     def wait_for_pose_update(self, timeout: float = None) -> bool:
         """Block until the next /sensor_kinematics message arrives (~25 Hz)."""
-        with self._pose_condition:
-            target_seq = self._pose_seq
-            if timeout is None:
-                while self._pose_seq == target_seq:
-                    self._pose_condition.wait()
-                return True
+        return self._pose_event.wait(timeout=timeout)
 
-            end_time = time.monotonic() + timeout
-            while self._pose_seq == target_seq:
-                remaining = end_time - time.monotonic()
-                if remaining <= 0.0:
-                    return False
-                self._pose_condition.wait(timeout=remaining)
-            return True
+    def wait_for_odometry_reset(self, timeout: float = 2.0) -> bool:
+        """Block until the firmware confirms the odometry reset (theta ≈ initial_theta).
+
+        Call this after reset_odometry() instead of multiple wait_for_pose_update()
+        calls to guarantee that the initial-heading capture has happened before
+        reading get_pose() or get_fused_orientation().
+
+        Returns True if the reset was confirmed within *timeout* seconds, False
+        if it timed out (the firmware may not have responded).
+        """
+        return self._odom_reset_event.wait(timeout=timeout)
 
     def set_obstacles(self, obstacles: list[tuple[float, float]]) -> None:
         """
@@ -1358,6 +1613,151 @@ class Robot:
         with self._lock:
             return self._imu
 
+    def get_fused_orientation(self) -> float:
+        """
+        Return complementary-filter orientation estimate in degrees.
+
+        Blends the absolute AHRS heading (corrects long-term drift) with
+        the odometry theta (smooth, short-term accurate). The filter weight
+        ``_fusion_alpha`` (default 0.02) controls how quickly the AHRS
+        heading pulls the estimate; it only activates once the firmware reports
+        ``mag_calibrated = True``. Before calibration, returns odometry theta.
+        """
+        with self._lock:
+            return math.degrees(self._fused_theta)
+
+    def set_fusion_strategy(self, strategy: SensorFusion) -> None:
+        """
+        Replace the active heading-fusion strategy.
+
+        Any SensorFusion subclass is accepted (ComplementaryFilter,
+        AdaptiveComplementaryFilter, HeadingKalmanFilter, or a custom class).
+        The new strategy takes effect on the next kinematics update.
+        """
+        with self._lock:
+            self._fusion = strategy
+
+    def set_fusion_alpha(self, alpha: float) -> None:
+        """
+        Set the AHRS heading weight for the complementary filter (0.0–1.0).
+
+        Only valid when the active strategy is ComplementaryFilter (the default).
+        Raises TypeError if a different strategy is currently active — call
+        set_fusion_strategy(ComplementaryFilter(alpha)) instead.
+
+        Lower values trust odometry more (less AHRS noise, more drift).
+        Higher values correct drift faster but introduce more AHRS noise.
+        Default is 0.02.
+        """
+        with self._lock:
+            if not isinstance(self._fusion, ComplementaryFilter):
+                raise TypeError(
+                    f"set_fusion_alpha() requires the active strategy to be "
+                    f"ComplementaryFilter, but it is "
+                    f"{type(self._fusion).__name__}. "
+                    "Use set_fusion_strategy(ComplementaryFilter(alpha)) instead."
+                )
+            self._fusion.alpha = max(0.0, min(1.0, float(alpha)))
+
+    def set_imu_z_down(self, z_down: bool) -> None:
+        """
+        Configure the IMU mounting orientation.
+
+        Set to True when the sensor is mounted upside-down (Z-axis pointing
+        toward the ground).  When enabled, the yaw extracted from the AHRS
+        quaternion is negated to undo the sign flip caused by the inverted
+        attitude the Fusion library converges to.
+
+        The IMU must be re-calibrated after physically flipping the
+        sensor; calibration data collected in one orientation is not valid in
+        the other.
+
+        Default is False (Z-axis points up, chip label visible from above).
+        """
+        with self._lock:
+            self._imu_z_down = bool(z_down)
+
+    def get_fused_pose(self) -> tuple[float, float, float]:
+        """
+        Return the fused (x, y, theta_deg) in user units and degrees.
+
+        Position is a complementary-filter blend of GPS (ArUco tag) and odometry.
+        Orientation is a complementary-filter blend of AHRS heading and odometry.
+        When the GPS tag is not visible for more than ``_gps_timeout_s`` seconds,
+        the position falls back to pure odometry automatically.
+        """
+        return self.get_pose()
+
+    def set_tracked_tag_id(self, tag_id: int) -> None:
+        """
+        Set the ArUco tag ID used for GPS position fusion.
+
+        Only detections matching this tag contribute to the fused position.
+        Pass -1 (default) to accept any tag from /tag_detections.
+        """
+        with self._lock:
+            self._tracked_tag_id = int(tag_id)
+
+    def get_tracked_tag_id(self) -> int:
+        """Return the currently tracked ArUco tag ID (-1 means any)."""
+        with self._lock:
+            return self._tracked_tag_id
+
+    def set_gps_offset(self, offset_x_mm: float, offset_y_mm: float) -> None:
+        """
+        Set the fixed translation from GPS frame to arena frame (mm).
+
+        The GPS (ArUco tag) coordinate origin does not coincide with the robot's
+        starting corner. Measure this offset once — e.g. by driving the robot to
+        a point whose arena coordinates are known, reading the GPS fix at that
+        point, and computing offset = arena_pos - gps_pos — then pass it here.
+
+        arena_x = gps_x + offset_x
+        arena_y = gps_y + offset_y
+        """
+        with self._lock:
+            self._gps_offset_x_mm = float(offset_x_mm)
+            self._gps_offset_y_mm = float(offset_y_mm)
+
+    def set_tag_body_offset(self, forward_mm: float, left_mm: float) -> None:
+        """
+        Set the ArUco tag mounting offset relative to the robot body origin (mm).
+
+        If the tag is not centred on the robot's body origin, pass the tag's
+        position in the robot's local frame here so the fusion corrects for it:
+
+        - ``forward_mm`` — positive = tag is ahead of body centre.
+        - ``left_mm``    — positive = tag is to the left of body centre.
+
+        The correction is applied every time a tag detection arrives by rotating
+        the body-frame offset into the arena frame using the current fused heading
+        and subtracting it from the detected tag position.
+
+        Default is (0, 0) — tag assumed to be at the body origin.
+        """
+        with self._lock:
+            self._tag_body_offset_x_mm = float(forward_mm)
+            self._tag_body_offset_y_mm = float(left_mm)
+
+    def set_pos_fusion_alpha(self, alpha: float) -> None:
+        """
+        Set the GPS weight for position fusion (0.0–1.0).
+
+        0.0 — trust odometry only (GPS ignored even when available).
+        1.0 — snap position directly to GPS each kinematics tick.
+        Default is 0.10.
+        """
+        with self._lock:
+            self._pos_fusion_alpha = max(0.0, min(1.0, float(alpha)))
+
+    def is_gps_active(self) -> bool:
+        """Return True if a GPS fix for the tracked tag arrived within the staleness window."""
+        with self._lock:
+            return (
+                self._gps_last_time > 0.0
+                and (_time.monotonic() - self._gps_last_time) < self._gps_timeout_s
+            )
+
     # =========================================================================
     # Units
     # =========================================================================
@@ -1601,9 +2001,9 @@ class Robot:
     # =========================================================================
 
     def _get_pose_mm(self) -> tuple[float, float, float]:
-        """Return (x_mm, y_mm, theta_rad) without unit conversion."""
+        """Return fused (x_mm, y_mm, theta_rad) without unit conversion."""
         with self._lock:
-            return self._pose
+            return (self._fused_x_mm, self._fused_y_mm, self._fused_theta)
 
     def _get_obstacles_mm(self) -> list[tuple[float, float]]:
         """Return cached and provider-supplied APF obstacles in robot-frame millimeters."""
