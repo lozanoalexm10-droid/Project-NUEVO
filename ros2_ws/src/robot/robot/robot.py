@@ -240,6 +240,7 @@ class Robot:
         self._odom_y_at_anchor:  float       = 0.0   # raw odometry y when anchor was set
         self._anchor_valid:      bool        = False  # True once first GPS fix has been received
         self._vel:     tuple = (0.0, 0.0, 0.0)  # vx_mm_s, vy_mm_s, vtheta_rad_s
+        self._pose_seq: int = 0
         self._buttons: int   = 0
         self._limits:  int   = 0
         self._button_edges: int = 0
@@ -249,8 +250,7 @@ class Robot:
         self._obstacle_provider: Callable[[], list[tuple[float, float]]] | None = None
 
         # ── Events ────────────────────────────────────────────────────────────
-        self._pose_event: threading.Event = threading.Event()
-        self._odom_reset_event: threading.Event = threading.Event()
+        self._pose_condition: threading.Condition = threading.Condition(self._lock)
         self._button_events: dict[int, threading.Event] = {}
         self._limit_events:  dict[int, threading.Event] = {}
 
@@ -385,116 +385,10 @@ class Robot:
                 self._ahrs_prev_wrapped = None
 
     def _on_kinematics(self, msg: SensorKinematics) -> None:
-        with self._lock:
+        with self._pose_condition:
             self._pose = (msg.x, msg.y, msg.theta)
-            self._vel  = (msg.vx, msg.vy, msg.v_theta)
-
-            # Orientation fusion: delegate to the active strategy.
-            #
-            # The AHRS yaw is an absolute, bounded heading (wrapped to [-π, π]).
-            # The firmware odometry (msg.theta) is unbounded — it accumulates past
-            # 2π for multiple rotations.  Passing the bounded AHRS directly to the
-            # filter causes wrap() discontinuities every half-revolution when
-            # |ahrs - odom| crosses ±π.
-            #
-            # Fix: incrementally unwrap the relative AHRS heading so it accumulates
-            # in the same unbounded frame as odometry.  Their difference then stays
-            # small, and wrap() in the filter is never discontinuous.
-            if self._ahrs_heading is not None:
-                # If a reset is pending, wait for the firmware-confirmed tick
-                # where msg.theta has snapped to initial_theta_deg before
-                # capturing the AHRS zero reference.  Until then, suppress
-                # AHRS fusion so the filter sees only raw odometry.
-                _initial_theta_rad = math.radians(self._initial_theta_deg)
-                if self._odom_reset_pending:
-                    if abs(math.atan2(
-                        math.sin(msg.theta - _initial_theta_rad),
-                        math.cos(msg.theta - _initial_theta_rad),
-                    )) < math.radians(5.0):
-                        # Firmware confirmed the reset — capture AHRS offset
-                        # at this exact tick so both zero references share the
-                        # same physical timestamp.
-                        self._ahrs_heading_offset = self._ahrs_heading
-                        self._ahrs_prev_wrapped   = 0.0  # relative heading is 0 by definition
-                        self._odom_reset_pending  = False
-                        self._odom_reset_event.set()
-                    # Still pending: skip AHRS fusion this tick
-                    relative_ahrs = None
-                else:
-                    curr_wrapped = math.atan2(
-                        math.sin(self._ahrs_heading - self._ahrs_heading_offset),
-                        math.cos(self._ahrs_heading - self._ahrs_heading_offset),
-                    )
-                    if self._ahrs_prev_wrapped is None:
-                        # First AHRS sample since startup or after calibration
-                        # loss: seed the accumulator at the current odometry
-                        # level so the filter sees zero initial discrepancy.
-                        # Using msg.theta (not curr_wrapped) keeps both signals
-                        # in the same unbounded reference frame — AHRS then
-                        # contributes only incremental corrections, never an
-                        # absolute compass jump.
-                        self._ahrs_accumulated = msg.theta
-                    else:
-                        delta = math.atan2(
-                            math.sin(curr_wrapped - self._ahrs_prev_wrapped),
-                            math.cos(curr_wrapped - self._ahrs_prev_wrapped),
-                        )
-                        self._ahrs_accumulated += delta
-                    self._ahrs_prev_wrapped = curr_wrapped
-                    relative_ahrs = self._ahrs_accumulated
-            else:
-                # AHRS not calibrated — if a reset is pending, check whether
-                # the firmware theta has returned to initial_theta so we can
-                # clear the pending flag (no AHRS offset to capture yet).
-                if self._odom_reset_pending:
-                    _initial_theta_rad = math.radians(self._initial_theta_deg)
-                    if abs(math.atan2(
-                        math.sin(msg.theta - _initial_theta_rad),
-                        math.cos(msg.theta - _initial_theta_rad),
-                    )) < math.radians(5.0):
-                        self._odom_reset_pending = False
-                        self._odom_reset_event.set()
-                relative_ahrs = None
-            linear_vel  = math.hypot(float(msg.vx), float(msg.vy))
-            angular_vel = float(msg.v_theta)
-            self._fused_theta = self._fusion.update(
-                odom_theta  = msg.theta,
-                mag_heading = relative_ahrs,
-                linear_vel  = linear_vel,
-                angular_vel = angular_vel,
-            )
-
-            # Position fusion: complementary filter blending odometry with GPS.
-            # When GPS is available, anchor the absolute position and update the
-            # dead-reckoning baseline. When GPS is stale, project forward from the
-            # last anchor using the odometry delta to avoid raw-odometry drift.
-            gps_fresh = (
-                self._gps_last_time > 0.0
-                and (_time.monotonic() - self._gps_last_time) < self._gps_timeout_s
-            )
-            if gps_fresh:
-                diff_x = self._gps_x_mm - msg.x
-                diff_y = self._gps_y_mm - msg.y
-                self._fused_x_mm = msg.x + self._pos_fusion_alpha * diff_x
-                self._fused_y_mm = msg.y + self._pos_fusion_alpha * diff_y
-                # Update anchor so dead reckoning continues from the corrected position.
-                self._anchor_x_mm      = self._fused_x_mm
-                self._anchor_y_mm      = self._fused_y_mm
-                self._odom_x_at_anchor = msg.x
-                self._odom_y_at_anchor = msg.y
-                self._anchor_valid     = True
-            elif self._anchor_valid:
-                # GPS stale but we have a prior fix: project from anchor using
-                # odometry delta so drift only accumulates since the last fix.
-                self._fused_x_mm = self._anchor_x_mm + (msg.x - self._odom_x_at_anchor)
-                self._fused_y_mm = self._anchor_y_mm + (msg.y - self._odom_y_at_anchor)
-            else:
-                # No GPS fix ever received; fall back to raw odometry.
-                self._fused_x_mm = msg.x
-                self._fused_y_mm = msg.y
-
-        self._pose_event.set()
-        self._pose_event.clear()
+            self._pose_seq += 1
+            self._pose_condition.notify_all()
 
         # # Publish fused state so external tools (RViz, student nodes, etc.)
         # # receive corrected position and heading on /fused_kinematics without
@@ -786,7 +680,20 @@ class Robot:
 
     def wait_for_pose_update(self, timeout: float = None) -> bool:
         """Block until the next /sensor_kinematics message arrives (~25 Hz)."""
-        return self._pose_event.wait(timeout=timeout)
+        with self._pose_condition:
+            target_seq = self._pose_seq
+            if timeout is None:
+                while self._pose_seq == target_seq:
+                    self._pose_condition.wait()
+                return True
+
+            end_time = time.monotonic() + timeout
+            while self._pose_seq == target_seq:
+                remaining = end_time - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._pose_condition.wait(timeout=remaining)
+            return True
 
     def wait_for_odometry_reset(self, timeout: float = 2.0) -> bool:
         """Block until the firmware confirms the odometry reset (theta ≈ initial_theta).
