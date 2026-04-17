@@ -1705,13 +1705,19 @@ class Robot:
             pose = self._pose
             # vel = self._vel
 
+        # virtual obstacles
+        # obstacles = np.float64([(-50.0,1000.0),])
+        # obstacles = (obstacles-np.float64([[pose[0], pose[1]]]))
+        # obstacles = (np.array([[np.cos(pose[2]), -np.sin(pose[2])], [np.sin(pose[2]), np.cos(pose[2])]]).T @ obstacles.T).T # obstacles in robot frame
+
         v, w = self.planner.compute_velocity(pose, obstacles)
         # print(f"Computed velocity: linear={v:.1f} mm/s, angular={math.degrees(w):.1f} deg/s")
         self.set_velocity(v, math.degrees(w))
-        # print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
+        print(f"Current Pose: ({pose[0]:.1f}, {pose[1]:.1f}, {math.degrees(pose[2]):.1f} deg)")
 
         if self.planner.TargetReached(self.planner.remaining_path, pose[0], pose[1]):
             print("MOVING: Target reached! Stopping.")
+            print(self.planner.remaining_path, pose[0], pose[1])
             self.stop()
             return "IDLE"
 

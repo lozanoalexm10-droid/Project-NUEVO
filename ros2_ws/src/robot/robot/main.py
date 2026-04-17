@@ -81,18 +81,19 @@ def run(robot: Robot) -> None:
             print("[FSM] INIT (odometry reset)")
             path_control_points = [
                 (0.0,   0.0),
-                (0.0, 2000.0),
-                (2000.0, 2000.0),
+                (0.0, 2500.0),
+                (700.0, 2500.0),
             ]
-            path = np.float64(densify_polyline(path_control_points, spacing=500.0))
+            path = densify_polyline(path_control_points, spacing=300.0)
+
             robot._nav_follow_pp_path(
-                lookahead_distance=200.0,
-                max_linear_speed=200.0,
-                goal_tolerance=100.0,
-                obstacles_range=1000.0,
-                safe_dist=150.0,
-                sharp_angle=math.pi / 3,
-                alpha=0.5,
+                lookahead_distance=100.0,
+                max_linear_speed=130.0,
+                goal_tolerance=20.0,
+                obstacles_range=500.0,
+                safe_dist=200.0,
+                sharp_angle=math.pi/5,
+                alpha=0.8,
             )
             robot._set_pp_path(path)
             print("Path is ready, Entering IDLE state.")
