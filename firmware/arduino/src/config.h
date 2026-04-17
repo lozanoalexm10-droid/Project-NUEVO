@@ -254,7 +254,7 @@ extern Print &DEBUG_SERIAL;
 // ============================================================================
 
 // IMU (ICM-20948 via SparkFun library + Fusion AHRS)
-#define IMU_ENABLED             0
+#define IMU_ENABLED             1
 // AD0_VAL: 0 = I2C addr 0x68 (AD0 pin LOW), 1 = I2C addr 0x69 (AD0 pin HIGH)
 #define IMU_AD0_VAL             1       // SparkFun breakout default: AD0 high = 0x69
 // Explicit IMU full-scale settings. Keep these aligned with FusionWrapper and
