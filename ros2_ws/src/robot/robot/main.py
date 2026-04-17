@@ -74,7 +74,8 @@ def start_robot(robot: Robot) -> None:
 
 def run(robot: Robot) -> None:
     configure_robot(robot)
-    
+    robot.set_fusion_alpha(0.02)        # heading fusion weight (tune in Task 1a)
+    robot.set_pos_fusion_alpha(0.3)     # position fusion weight (tune in Task 1b)
 
     state = "INIT"
     drive_handle = None
