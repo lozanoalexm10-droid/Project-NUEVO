@@ -145,6 +145,7 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
     def __init__(self,
             lookahead_distance: float=100.0,
             max_linear_speed: float=100.0,
+            max_angular_speed: float=2.5,
             goal_tolerance: float=20.0,
             obstacles_range: float=300.0,
             safe_dist: float=200.0,
@@ -153,6 +154,7 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         self.Ld = lookahead_distance
         self.raw_LD = lookahead_distance
         self.v_max = max_linear_speed  # mm/s
+        self.w_max = max_angular_speed  # rad/s
         self.goal_tolerance = goal_tolerance
         self.obstacles_range = obstacles_range
         self.safe_dist = safe_dist
@@ -177,9 +179,10 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                 break
             self.remaining_path.pop(0)
 
-            # if self.avoidance_active:
-            #     self.avoidance_active = False
-            #     self.Ld = self.raw_LD
+            if self.avoidance_active:
+                self.avoidance_active = False
+                self.Ld = self.raw_LD
+                self.avoidance_counter = 0
 
         return self.remaining_path
 
@@ -195,6 +198,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         return path[-1]
     
     def TargetReached(self, path, x, y):
+        if self.avoidance_active:
+            return False # in avoidance mode, we don't check goal reached condition to prevent the robot from stopping before reaching the goal due to the added waypoints for obstacle avoidance, which may cause the robot to think it's close enough to the goal when it's actually still far away.
         goal_x, goal_y = path[0]
         dist_to_goal = np.hypot(goal_x - x, goal_y - y)
         return (dist_to_goal < self.goal_tolerance)
@@ -213,8 +218,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             obstacles_r = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles_r.T).T 
             
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
-            # obstacles_r = obstacles_r[obstacles_r[:,0]>0]
-            obstacles_r = obstacles_r[(obstacles_r[:,0]>0) & (np.abs(obstacles_r[:,1])<self.safe_dist),:]
+            obstacles_r = obstacles_r[obstacles_r[:,0]>0]
+            # obstacles_r = obstacles_r[(obstacles_r[:,0]>0) & (np.abs(obstacles_r[:,1])<self.safe_dist),:]
 
             # consider the lidar offset from the robot center
             # lidar_offset_mm = 100.0
@@ -225,23 +230,28 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
 
             # transform obstacles from robot frame to world frame.
             obstacles = (np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]) @ obstacles_r.T).T + np.array([[x, y],])
+            
+            # if desired path is close to obstacles, remove it.
+            if (self.remaining_path[0] in self.raw_path) and np.any(np.sqrt(np.sum((np.float64([self.remaining_path[0]])-obstacles)**2, 1)) < self.safe_dist):
+                print("Removing waypoint 0:", self.remaining_path[0])
+                self.remaining_path.pop(0)
+            if len(self.remaining_path) > 2:
+                if (self.remaining_path[1] in self.raw_path) and np.any(np.sqrt(np.sum((np.float64([self.remaining_path[1]])-obstacles)**2, 1)) < self.safe_dist):
+                    print("Removing waypoint 1:", self.remaining_path[1])
+                    self.remaining_path.pop(1)
 
             if (len(obstacles_r) > 0)  and (self.avoidance_counter <= 0):
-                # if desired path is close to obstacles, remove it.
-                if (self.remaining_path[0] in self.raw_path) and np.any(np.sqrt(np.sum((np.float64([self.remaining_path[0]])-obstacles)**2, 1)) < self.safe_dist):
-                    self.remaining_path.pop(0)
-
                 dists = np.linalg.norm(obstacles_r, axis=1)
                 min_dist = np.min(dists)
-                closest_pt = obstacles_r[np.argmin(dists),:] # closest obstacle point in robot frame
+                arg_dist = np.argmin(dists)
+                closest_pt = obstacles_r[arg_dist,:] # closest obstacle point in robot frame
                 
                 angle = np.arctan2(closest_pt[1],closest_pt[0]) + theta # angle of the obstacle in world frame
                 if min_dist < self.safe_dist:
                     delta_angle = self.sharp_angle # turn sharply if the robot is close to the obstacle
                 else:
-                    delta_angle = 2*np.abs(np.arctan2(self.safe_dist/2, np.sqrt(min_dist**2 - (self.safe_dist/2)**2)))
-                    # delta_angle = self.sharp_angle * 0.2
-                print(delta_angle)
+                    # delta_angle = 2*np.abs(np.arctan2(self.safe_dist/2, np.sqrt(min_dist**2 - (self.safe_dist/2)**2)))
+                    delta_angle = self.sharp_angle * 0.8
 
                 # find the closest waypoint on the desired path
                 target = self.raw_path[-1]
@@ -250,8 +260,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                         target = self.remaining_path[i]
                         break
                 
-                avoid_dist = min_dist
-                # avoid_dist = max(min_dist, self.safe_dist * 1.2)
+                # avoid_dist = min_dist
+                avoid_dist = max(min_dist, self.safe_dist * 1.5)
                 # Two candidate waypoints in +- orientations
                 candidate_waypoint1 = (x+avoid_dist*np.cos(angle+delta_angle), y+avoid_dist*np.sin(angle+delta_angle)) # left turn
                 candidate_waypoint2 = (x+avoid_dist*np.cos(angle-delta_angle), y+avoid_dist*np.sin(angle-delta_angle)) # left right
@@ -263,23 +273,27 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                 # find the candidate waypoints which is close to the desired path.
                 if np.hypot(target[0]-candidate_waypoint1[0], target[1]-candidate_waypoint1[1]) < np.hypot(target[0]-candidate_waypoint2[0], target[1]-candidate_waypoint2[1]):
                     self.remaining_path.insert(0, candidate_waypoint1)
+                    print("1:", delta_angle, candidate_waypoint1, pose, target)
                     self.avoidance_active = True
                 else:
                     self.remaining_path.insert(0, candidate_waypoint2)
+                    print("2:", delta_angle, candidate_waypoint2, pose, target)
                     self.avoidance_active = True
 
                 # self.Ld = max(self.raw_LD * 0.3, 50.0)
                 self.Ld = self.raw_LD * self.alpha # reduce lookahead distance to track added waypoints more precisely.
 
-                self.avoidance_counter = 20 # keep avoidance active for a few cycles to ensure the robot reacts to the obstacle.
+                self.avoidance_counter = 300 # keep avoidance active for a few cycles to ensure the robot reacts to the obstacle.
             # else:
             #     self.avoidance_counter -= 1
-        else:
-            self.Ld = self.raw_LD
-            self.avoidance_active = False
-        
-        if self.avoidance_counter>0:
+        # else:
+        #     self.Ld = self.raw_LD
+        #     self.avoidance_active = False
+        #     self.avoidance_counter = 0
+
+        if self.avoidance_counter > 0:
             self.avoidance_counter -= 1
+            # print(f"Avoidance active, counter: {self.avoidance_counter}")
 
         target = self._lookahead_point(self.remaining_path, x, y)
         tx, ty = target
@@ -288,19 +302,33 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         dy = ty - y
 
         # Transform to robot frame
-        # x_r = np.cos(theta) * dx + np.sin(theta) * dy
+        x_r = np.cos(theta) * dx + np.sin(theta) * dy
         y_r = -np.sin(theta) * dx + np.cos(theta) * dy
-        # Dist2Target = np.hypot(x_r, y_r)
+        dist = math.hypot(x_r, y_r)
 
-        curvature = 2.0 * y_r / (self.Ld ** 2)
-        # curvature = 2.0 * y_r / (self.raw_LD ** 2)
-        # curvature = 2.0 * y_r / (Dist2Target ** 2)
+        if dist < 1e-6:
+            return 0.0, 0.0
 
-        
-        v = self.v_max / (1.0 + 2.0 * abs(curvature))  # m/s
-        w = curvature * v  # rad/s
+        # Standard pure-pursuit curvature for a differential-drive robot.
+        curvature = 2.0 * y_r / (dist * dist)
 
-        return v, w
+        # Slow down for high-curvature turns. The lookahead-scaled term is
+        # dimensionless and gives a smooth transition between straight driving
+        # and tight cornering.
+        forward_scale = max(0.0, x_r / dist)
+        curvature_scale = 1.0 + abs(curvature) * self.Ld
+        linear = self.v_max * forward_scale / curvature_scale
+
+        if linear <= 1e-6:
+            angular = self.w_max * math.tanh(y_r / max(self.Ld, 1e-6))
+            return 0.0, angular
+
+        angular = curvature * linear
+        if abs(angular) > self.w_max:
+            angular = math.copysign(self.w_max, angular)
+            linear = min(linear, abs(angular / curvature)) if abs(curvature) > 1e-6 else linear
+
+        return linear, angular
 
     def motion(self, pose, v, w, dt):
         x, y, theta = pose

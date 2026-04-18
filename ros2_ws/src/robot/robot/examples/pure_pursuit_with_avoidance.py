@@ -84,17 +84,17 @@ def run(robot: Robot) -> None:
                 (0.0, 2500.0),
                 (700.0, 2500.0),
             ]
-            path = densify_polyline(path_control_points, spacing=500.0)
+            path = densify_polyline(path_control_points, spacing=300.0)
 
             robot._nav_follow_pp_path(
                 lookahead_distance=100.0,
                 max_linear_speed=130.0,
-                max_angular_speed=2.0,
+                max_angular_speed=2.5,
                 goal_tolerance=20.0,
                 obstacles_range=400.0,
                 safe_dist=150.0,
                 sharp_angle=math.pi/4,
-                alpha=0.3,
+                alpha=0.5,
             )
             robot._set_pp_path(path)
             print("Path is ready, Entering IDLE state.")

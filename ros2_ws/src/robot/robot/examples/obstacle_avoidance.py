@@ -81,8 +81,8 @@ def run(robot: Robot) -> None:
             print("[FSM] INIT (odometry reset)")
             path_control_points = [
                 (0.0,   0.0),
-                (0.0, 2000.0),
-                (2000.0, 2000.0),
+                (0.0, 2500.0),
+                (700.0, 2500.0),
             ]
             path = np.float64(densify_polyline(path_control_points, spacing=500.0))
             robot._nav_follow_dwa_path(
