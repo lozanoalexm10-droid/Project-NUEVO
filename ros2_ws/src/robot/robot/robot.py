@@ -173,6 +173,8 @@ class Robot:
     DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = True
     POSITION_ALPHA = 0.10  # complementary filter GPS weight for position fusion
     ORIENTATION_ALPHA = 0.0  # complementary filter IMU weight for orientation fusion (IMU is not working well, so default to pure odometry for now)
+    TAG_X_OFFSET_MM = 0.0  # ArUco tag position in robot body frame x (mm, forward)
+    TAG_Y_OFFSET_MM = 0.0  # ArUco tag position in robot body frame y (mm, left)
 
     # Servo pulse range (standard hobby servo)
     _SERVO_MIN_US: int = 1000
@@ -227,8 +229,8 @@ class Robot:
         self._gps_timeout_s:     float       = 1.0   # seconds before GPS is treated as stale
         self._gps_offset_x_mm:   float       = 304.8   # GPS frame → arena frame translation x
         self._gps_offset_y_mm:   float       = 1524   # GPS frame → arena frame translation y
-        self._tag_body_offset_x_mm: float    = 0.0   # tag position in robot body frame x (mm, forward)
-        self._tag_body_offset_y_mm: float    = 0.0   # tag position in robot body frame y (mm, left)
+        self._tag_body_offset_x_mm: float    = self.TAG_X_OFFSET_MM   # tag position in robot body frame x (mm, forward)
+        self._tag_body_offset_y_mm: float    = self.TAG_Y_OFFSET_MM   # tag position in robot body frame y (mm, left)
         self._fused_x_mm:        float       = 0.0   # complementary-filter x output (mm)
         self._fused_y_mm:        float       = 0.0   # complementary-filter y output (mm)
         self._pos_fusion:        PositionComplementaryFilter = PositionComplementaryFilter(alpha=self.POSITION_ALPHA)
