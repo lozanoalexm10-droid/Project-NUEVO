@@ -76,7 +76,7 @@ def start_robot(robot: Robot) -> None:
 
 def run(robot: Robot) -> None:
     configure_robot(robot)
-    robot.set_fusion_alpha(0.02)        # heading fusion weight (tune in Task 1a)
+    robot.set_fusion_alpha(0.0)        # heading fusion weight (tune in Task 1a) SET TO 0.0 TO DISABLE HEADING FUSION SINCE IMU IS NOT WORKING WELL
     robot.set_pos_fusion_alpha(0.3)     # position fusion weight (tune in Task 1b)
 
     state = "INIT"
@@ -136,14 +136,15 @@ def run(robot: Robot) -> None:
 
         elif state == "IDLE":
             show_idle_leds(robot)
-            print("[FSM] IDLE - Press BTN_1 to enter MOVING state.")
-            if robot.get_button(Button.BTN_1):
+            print("[FSM] IDLE - Auto-starting in 3 seconds.")
+            time.sleep(3)
+            # Removed if button 1 pressed with auto start after 3 seconds. 
                 LOOKAHEAD_DIST = 50.0 # Lookahead distance in mm (adjust as needed)
                 planner1 = PurePursuitPlanner(
                     lookahead_dist=LOOKAHEAD_DIST, 
                     max_angular=1.5, # Max angular velocity in rad/s (adjust as needed)
                     goal_tolerance=20.0, # Distance in mm to consider the target reached (adjust as needed)
-             )
+                )
                 print("Pure Pursuit Planner is initialized. Start Moving!")
                 print("[FSM] MOVING")
                 state = "MOVING"
