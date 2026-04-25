@@ -1,17 +1,3 @@
-"""
-main.py — student entry point
-==============================
-This is the only file students are expected to edit.
-
-The structure is intentionally simple:
-- keep one plain `state` variable
-- write helper functions for robot actions
-- use `if state == "..."` inside the main loop
-
-To run:
-    ros2 run robot robot
-"""
-
 from __future__ import annotations
 import time
 
@@ -39,7 +25,6 @@ RIGHT_WHEEL_DIR_INVERTED = True
 
 
 def configure_robot(robot: Robot) -> None:
-    """Apply the user unit plus robot-specific wheel mapping and odometry settings."""
     robot.set_unit(POSITION_UNIT)
     robot.set_odometry_parameters(
         wheel_diameter=WHEEL_DIAMETER,
@@ -63,7 +48,6 @@ def show_moving_leds(robot: Robot) -> None:
 
 
 def start_robot(robot: Robot) -> None:
-    """Start the firmware and reset odometry before the main mission begins."""
     robot.set_state(FirmwareState.RUNNING)
     robot.reset_odometry()
     robot.wait_for_pose_update(timeout=0.2)
@@ -71,41 +55,48 @@ def start_robot(robot: Robot) -> None:
 
 def run(robot: Robot) -> None:
     configure_robot(robot)
-    
 
     state = "INIT"
     drive_handle = None
-    # FSM refresh rate control
     period = 1.0 / float(DEFAULT_FSM_HZ)
+    print(f"FSM period: {period:.3f} seconds")
     next_tick = time.monotonic()
 
     while True:
         if state == "INIT":
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
-            path_control_points = [ #Define your path control points here (x, y) in mm
-                (0.0, 0.0), # 1st point
-                (0.0, 500.0), # 2nd point
-                (500.0, 500.0), # 3rd point
-                (500.0, 0.0), # 4th point
-                (0.0, 0.0), # 5th point
-            ]    
-            path = np.float64(densify_polyline(path_control_points, spacing=20.0))
-            # initialize the DWA path follower with parameters
-            robot._nav_follow_dwa_path(max_vel_mm = 200.0,
-            max_acc_mm = 300.0,
-            max_angular_radv = 1.0,
-            max_angular_acc_rad = 2.0,
-            lookahead_mm = 200.0,
-            advance_radius_mm = 150.0,
-            tolerance_mm = 100.0,
-            gains_of_costs = [2.0, 0.02, 0.2, 0.8, 0.1],
-            period = period,
-            predict_time = 2.0,
-            predict_velocity_samples_resolution = [20.0, 0.1],
-            obstacles_range_mm = 1000.0,
-            ttc_weight = 0.1,
+            # center lane
+            # path_control_points = [
+            #     (0.0,   0.0),
+            #     (0.0, 2500.0),
+            #     (1000.0, 2500.0),
+            # ]
+            # left lane
+            path_control_points = [
+                (300.0,   0.0),
+                (300.0, 2500.0),
+                (1300.0, 2500.0),
+            ]
+
+            path = densify_polyline(path_control_points, spacing=400.0)
+
+            robot._nav_follow_pp_path(
+                lookahead_distance=100.0,
+                max_linear_speed=140.0,
+                max_angular_speed=1.5,
+                goal_tolerance=20.0,
+                obstacles_range=450.0,
+                view_angle=math.radians(70.0),
+                safe_dist=250.0,
+                avoidance_delay=150,
+                alpha_Ld=0.7,
+                offset=270.0,
+                lane_width=500.0,
+                obstacle_avoidance=True,
+                x_L=300.0,
             )
+            robot.planner.set_path(path)
             print("Path is ready, Entering IDLE state.")
             state = "IDLE"
 
@@ -114,16 +105,17 @@ def run(robot: Robot) -> None:
             robot._draw_lidar_obstacles()
             print("[FSM] IDLE - Press BTN_1 to enter MOVING state.")
             if robot.get_button(Button.BTN_1):
-                LOOKAHEAD_DIST = 100.0 # Lookahead distance in mm (adjust as needed)
-                robot._nav_follow_path_loop(path, period)
                 print("Start Moving!")
                 print("[FSM] MOVING")
                 state = "MOVING"
 
         elif state == "MOVING":
             show_moving_leds(robot)
-            
-            
+            # if next_tick % 0.5 < period: # print every half second
+            #     robot._draw_lidar_obstacles()
+            #     print("Obstacle figure updated.")
+            state = robot._nav_follow_pp_path_loop()
+
         # FSM refresh rate control
         next_tick += period
         sleep_s = next_tick - time.monotonic()
