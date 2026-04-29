@@ -26,7 +26,7 @@ import math
 # Robot build configuration
 # ---------------------------------------------------------------------------
 
-TAG_ID = 17 # set aruco tag ID 11 
+TAG_ID = 17 # set aruco tag ID 17
 POSITION_UNIT = Unit.MM
 WHEEL_DIAMETER = 74.0
 WHEEL_BASE = 350
@@ -76,8 +76,8 @@ def start_robot(robot: Robot) -> None:
 
 def run(robot: Robot) -> None:
     configure_robot(robot)
-    robot.set_fusion_alpha(0.0)        # heading fusion weight (tune in Task 1a) SET TO 0.0 TO DISABLE HEADING FUSION SINCE IMU IS NOT WORKING WELL
-    robot.set_pos_fusion_alpha(0.6)     # position fusion weight (tune in Task 1b)
+    robot.set_orientation_fusion_alpha(0.0)        # heading fusion weight (tune in Task 1a) SET TO 0.0 TO DISABLE HEADING FUSION SINCE IMU IS NOT WORKING WELL
+    robot.set_position_fusion_alpha(0.5)     # position fusion weight (tune in Task 1b)
 
     state = "INIT"
     drive_handle = None
@@ -139,15 +139,15 @@ def run(robot: Robot) -> None:
             print("[FSM] IDLE - Auto-starting in 3 seconds.")
             time.sleep(3)
             # Removed if button 1 pressed with auto start after 3 seconds. 
-                LOOKAHEAD_DIST = 50.0 # Lookahead distance in mm (adjust as needed)
-                planner1 = PurePursuitPlanner(
-                    lookahead_dist=LOOKAHEAD_DIST, 
-                    max_angular=1.5, # Max angular velocity in rad/s (adjust as needed)
-                    goal_tolerance=20.0, # Distance in mm to consider the target reached (adjust as needed)
-                )
-                print("Pure Pursuit Planner is initialized. Start Moving!")
-                print("[FSM] MOVING")
-                state = "MOVING"
+            LOOKAHEAD_DIST = 50.0 # Lookahead distance in mm (adjust as needed)
+            planner1 = PurePursuitPlanner(
+                lookahead_dist=LOOKAHEAD_DIST, 
+                max_angular=1.5, # Max angular velocity in rad/s (adjust as needed)
+                goal_tolerance=20.0, # Distance in mm to consider the target reached (adjust as needed)
+            )
+            print("Pure Pursuit Planner is initialized. Start Moving!")
+            print("[FSM] MOVING")
+            state = "MOVING"
 
         elif state == "MOVING":
             show_moving_leds(robot)
