@@ -77,7 +77,7 @@ def start_robot(robot: Robot) -> None:
 def run(robot: Robot) -> None:
     configure_robot(robot)
     robot.set_fusion_alpha(0.0)        # heading fusion weight (tune in Task 1a) SET TO 0.0 TO DISABLE HEADING FUSION SINCE IMU IS NOT WORKING WELL
-    robot.set_pos_fusion_alpha(0.3)     # position fusion weight (tune in Task 1b)
+    robot.set_pos_fusion_alpha(0.6)     # position fusion weight (tune in Task 1b)
 
     state = "INIT"
     drive_handle = None
