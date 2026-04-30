@@ -126,7 +126,7 @@ def run(robot: Robot) -> None:
             #    (1300.0, 2500.0),
             #]
 
-            path1 = densify_polyline(path_control_points, spacing=400.0)
+            path1 = densify_polyline(path_control_points, spacing=50.0)
             remaining_path = path1.copy() 
 
             robot._nav_follow_pp_path(
@@ -144,7 +144,7 @@ def run(robot: Robot) -> None:
                 obstacle_avoidance=True,
                 x_L=300.0,
             )
-            robot.planner.set_path(path)
+            robot.planner.set_path(path1)
             print("Path is ready, Entering IDLE state.")
             state = "IDLE"
 
