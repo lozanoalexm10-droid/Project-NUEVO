@@ -97,20 +97,20 @@ def run(robot: Robot) -> None:
             # (0.0, 0.0),
 
             # Venue Path
-            (0.0, 0.0),        # Start
+            (305.0, 0.0),        # Start mid way down first tile. Start at line/duct tape
 
-            (0.0, 3660.0),     # go right 6 tiles
-            (610.0, 3660.0),     # Down 1
+            (305.0, 3355.0),     # go right 5.5 tiles
+            (915.0, 3355.0),     # Down 1
 
-            (610.0, 610.0),    # Go left 5 tiles (deal with bump here)
-            (1565.0, 610.0),    # Go down 1.5 (in front of obstacle field)
+            (915.0, 305.0),    # Go left 5 tiles (deal with bump here)
+            (1830.0, 305.0),    # Go down 1.5 (in front of obstacle field)
 
-            (1565.0, 3660.0),  # go right through obstacle field
+            (1830.0, 3355.0),  # go right through obstacle field
 
-            (2530.0, 3660.0),   # Go Down 1.5
-            (2530.0, 610.0),   # Go Left 5 tiles
+            (2745.0, 3355.0),   # Go Down 1.5
+            (2745.0, 305.0),   # Go Left 5 tiles
 
-            (2225.0, 305.0),    # near task zone
+            (3050.0, 0),    # near task zone
             ]    
             
             # center lane
