@@ -1,17 +1,3 @@
-"""
-main.py — student entry point
-==============================
-This is the only file students are expected to edit.
-
-The structure is intentionally simple:
-- keep one plain `state` variable
-- write helper functions for robot actions
-- use `if state == "..."` inside the main loop
-
-To run:
-    ros2 run robot robot
-"""
-
 from __future__ import annotations
 import time
 
@@ -20,6 +6,7 @@ from robot.hardware_map import Button, DEFAULT_FSM_HZ, LED, Motor
 from robot.util import densify_polyline
 from robot.path_planner import PurePursuitPlanner
 import math
+import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +26,6 @@ RIGHT_WHEEL_DIR_INVERTED = True
 
 
 def configure_robot(robot: Robot) -> None:
-    """Apply the user unit plus robot-specific wheel mapping and odometry settings."""
     robot.set_unit(POSITION_UNIT)
     robot.set_odometry_parameters(
         wheel_diameter=WHEEL_DIAMETER,
@@ -64,9 +50,7 @@ def show_moving_leds(robot: Robot) -> None:
 
 
 def start_robot(robot: Robot) -> None:
-    """Start the firmware and reset odometry before the main mission begins."""
-    if not robot.set_state(FirmwareState.RUNNING):
-        print("[FSM] ERROR: failed to transition firmware to RUNNING. Check bridge / serial status.")
+    robot.set_state(FirmwareState.RUNNING)
     robot.reset_odometry()
     if not robot.wait_for_pose_update(timeout=0.2):
         print("[FSM] WARNING: timed out waiting for a pose update after odometry reset.")
@@ -81,8 +65,8 @@ def run(robot: Robot) -> None:
 
     state = "INIT"
     drive_handle = None
-    # FSM refresh rate control
     period = 1.0 / float(DEFAULT_FSM_HZ)
+    print(f"FSM period: {period:.3f} seconds")
     next_tick = time.monotonic()
 
     while True:
@@ -128,16 +112,50 @@ def run(robot: Robot) -> None:
 
             (2225.0, 305.0),    # near task zone
             ]    
-            #path1 = path_control_points
-            path1 = densify_polyline(path_control_points, spacing=20.0)
+            
+            # center lane
+            # path_control_points = [
+            #     (0.0,   0.0),
+            #     (0.0, 2500.0),
+            #     (1000.0, 2500.0),
+            # ]
+            # left lane
+            #path_control_points = [
+            #    (300.0,   0.0),
+            #    (300.0, 2500.0),
+            #    (1300.0, 2500.0),
+            #]
+
+            path1 = densify_polyline(path_control_points, spacing=400.0)
             remaining_path = path1.copy() 
+
+            robot._nav_follow_pp_path(
+                lookahead_distance=100.0,
+                max_linear_speed=140.0,
+                max_angular_speed=1.5,
+                goal_tolerance=20.0,
+                obstacles_range=450.0,
+                view_angle=math.radians(70.0),
+                safe_dist=250.0,
+                avoidance_delay=150,
+                alpha_Ld=0.7,
+                offset=270.0,
+                lane_width=500.0,
+                obstacle_avoidance=True,
+                x_L=300.0,
+            )
+            robot.planner.set_path(path)
             print("Path is ready, Entering IDLE state.")
             state = "IDLE"
 
         elif state == "IDLE":
             show_idle_leds(robot)
-            print("[FSM] IDLE - Auto-starting in 3 seconds.")
+            robot._draw_lidar_obstacles()
             time.sleep(3)
+            if robot.get_button(Button.BTN_2):
+                print("BTN_2 pressed. Stopping robot and saving trajectory.")
+                robot.shutdown()
+            print("[FSM] IDLE - Auto-starting in 3 seconds.")
             # Removed if button 1 pressed with auto start after 3 seconds. 
             LOOKAHEAD_DIST = 50.0 # Lookahead distance in mm (adjust as needed)
             planner1 = PurePursuitPlanner(
@@ -151,6 +169,11 @@ def run(robot: Robot) -> None:
 
         elif state == "MOVING":
             show_moving_leds(robot)
+            # if next_tick % 0.5 < period: # print every half second
+            #     robot._draw_lidar_obstacles()
+            #     print("Obstacle figure updated.")
+            state = robot._nav_follow_pp_path_loop()
+
 
             # Step 1: Get current pose
             current_x, current_y, current_theta_deg = robot.get_pose()
