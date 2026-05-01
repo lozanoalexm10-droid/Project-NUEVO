@@ -462,17 +462,9 @@ class GroundLocalizer(Node):
                 f"theta={np.degrees(theta):.1f}°"
             )
 
-        # When no rover tag is recovered, publish a sentinel so consumers
+        # Always publish — even when no rover tag is visible — so consumers
         # see a steady stream and can distinguish "no rovers visible" from
-        # "node is dead". tag_id = -1, all pose values NaN.
-        if not detections:
-            sentinel = TagDetection()
-            sentinel.tag_id = -1
-            sentinel.x = float("nan")
-            sentinel.y = float("nan")
-            sentinel.theta = float("nan")
-            detections = [sentinel]
-
+        # "node is dead". An empty detections array is the no-rovers signal.
         msg = TagDetectionArray()
         msg.header = rgb_msg.header
         msg.detections = detections
@@ -483,13 +475,13 @@ class GroundLocalizer(Node):
         )
         self._tcp_push(detections, stamp_sec)
 
-        if detections[0].tag_id == -1:
-            self.get_logger().debug("No rover tags visible — published sentinel.")
-        else:
+        if detections:
             self.get_logger().info(
                 f"Published {len(detections)} rover tag(s): "
                 f"{[d.tag_id for d in detections]}"
             )
+        else:
+            self.get_logger().debug("No rover tags visible — published empty array.")
 
     # ── World-pose computation ────────────────────────────────────────────
 

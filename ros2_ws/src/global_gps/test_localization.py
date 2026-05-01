@@ -313,19 +313,14 @@ def main() -> None:
         """Return the list that the node would publish/push.
 
         rover_results: list of (tag_id, x, y, theta) for each rover that
-        produced a valid pose. Empty list means no rover seen.
+        produced a valid pose. Empty list means no rover seen — the node
+        publishes an empty detections array (no sentinel).
         """
-        detections = [
+        return [
             FakeTagDetection(tag_id=int(mid), x=float(x), y=float(y),
                              theta=float(th))
             for (mid, x, y, th) in rover_results
         ]
-        if not detections:
-            detections = [FakeTagDetection(
-                tag_id=-1,
-                x=float("nan"), y=float("nan"), theta=float("nan"),
-            )]
-        return detections
 
     def tcp_payload(detections, stamp_sec: float = 1234.5) -> str:
         return json.dumps({
@@ -336,27 +331,18 @@ def main() -> None:
             ],
         }) + "\n"
 
-    print("\n=== sentinel publishing: no rovers visible ===")
+    print("\n=== no rovers visible: empty detections array ===")
     dets = build_detections([])
-    assert len(dets) == 1, f"sentinel should be a single entry, got {len(dets)}"
-    s = dets[0]
-    assert s.tag_id == -1, f"expected tag_id=-1, got {s.tag_id}"
-    assert math.isnan(s.x) and math.isnan(s.y) and math.isnan(s.theta), \
-        "expected NaN for x, y, theta"
-
+    assert dets == [], f"expected empty list, got {dets}"
     payload = tcp_payload(dets)
     print(f"  payload: {payload.rstrip()}")
-    # Round-trip JSON (Python's json.loads accepts NaN by default)
     parsed = json.loads(payload)
-    assert parsed["detections"][0]["tag_id"] == -1
-    assert math.isnan(parsed["detections"][0]["x"])
-    assert math.isnan(parsed["detections"][0]["y"])
-    assert math.isnan(parsed["detections"][0]["theta"])
+    assert parsed["detections"] == [], \
+        f"expected empty detections array, got {parsed['detections']}"
 
-    print("\n=== sentinel suppressed when rovers ARE visible ===")
+    print("\n=== rovers visible: detections populated ===")
     dets = build_detections([(11, 1.2, 0.9, 0.0), (12, 2.0, 1.5, 1.57)])
     assert len(dets) == 2, f"expected 2 detections, got {len(dets)}"
-    assert all(d.tag_id != -1 for d in dets), "no sentinel should appear"
     assert not any(math.isnan(d.x) or math.isnan(d.y) or math.isnan(d.theta)
                    for d in dets), "no NaN values when rovers present"
     payload = tcp_payload(dets)
