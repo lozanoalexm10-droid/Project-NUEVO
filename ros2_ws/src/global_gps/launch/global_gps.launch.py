@@ -64,7 +64,8 @@ def generate_launch_description() -> LaunchDescription:
             # Align depth to colour frame so pixel coordinates match.
             "align_depth.enable": "true",
             # Publish at camera native rate (typically 30 Hz).
-            "rgb_camera.color_profile": "640x480x30",
+            # "rgb_camera.color_profile": "640x480x30",
+            "rgb_camera.color_profile": "1280x720x15",
             "depth_module.depth_profile": "640x480x30",
         }.items(),
     )
