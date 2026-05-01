@@ -40,6 +40,15 @@ def generate_launch_description() -> LaunchDescription:
         default_value="7777",
         description="TCP port for the robot push server (NAT-friendly delivery).",
     )
+    calibration_layout_file_arg = DeclareLaunchArgument(
+        "calibration_layout_file",
+        default_value="",
+        description=(
+            "Path to a YAML file with world-frame coordinates of the four "
+            "calibration tags. Empty -> use packaged default at "
+            "<global_gps share>/config/calibration_layout.yaml."
+        ),
+    )
 
     # ── RealSense camera driver ───────────────────────────────────────────
     realsense_launch = IncludeLaunchDescription(
@@ -71,6 +80,7 @@ def generate_launch_description() -> LaunchDescription:
             "corner_ids": LaunchConfiguration("corner_ids"),
             "rover_ids": LaunchConfiguration("rover_ids"),
             "tcp_port": LaunchConfiguration("tcp_port"),
+            "calibration_layout_file": LaunchConfiguration("calibration_layout_file"),
         }],
     )
 
@@ -79,6 +89,7 @@ def generate_launch_description() -> LaunchDescription:
         corner_ids_arg,
         rover_ids_arg,
         tcp_port_arg,
+        calibration_layout_file_arg,
         realsense_launch,
         localizer_node,
     ])
