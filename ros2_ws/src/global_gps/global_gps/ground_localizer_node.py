@@ -151,17 +151,19 @@ class GroundLocalizer(Node):
         )
 
         # ── Subscribers ───────────────────────────────────────────────────
+        # Topics are relative ("image_raw", "camera_info") so the launch file
+        # can remap them to either the RGB color stream or the wider-FOV IR
+        # (infra1) stream.
         self.create_subscription(
             CameraInfo,
-            "/camera/camera/color/camera_info",
+            "camera_info",
             self._on_camera_info,
             10,
         )
 
-        # RGB-only operation — depth is not required by this node.
         self.create_subscription(
             Image,
-            "/camera/camera/color/image_raw",
+            "image_raw",
             self._on_rgb,
             qos_profile=qos_profile_sensor_data,
         )
@@ -188,8 +190,8 @@ class GroundLocalizer(Node):
         if self._K is None:
             return
 
-        rgb = self._bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
-        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+        # Accept either color (bgr8) or IR (mono8) — CvBridge converts as needed.
+        gray = self._bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="mono8")
 
         if self._use_new_aruco_api:
             corners, ids, _ = self._detector.detectMarkers(gray)
@@ -207,12 +209,20 @@ class GroundLocalizer(Node):
         marker_poses = self._estimate_poses(corners, ids)
 
         if not self._calibrated:
-            if all(mid in marker_poses for mid in self._corner_ids):
-                self._calibrate(marker_poses)
+            seen = [m for m in self._corner_ids if m in marker_poses]
+            missing = [m for m in self._corner_ids if m not in marker_poses]
+            # Rigid 3D alignment needs >= 3 non-collinear correspondences.
+            if len(seen) >= 3:
+                if missing:
+                    self.get_logger().warn(
+                        f"Calibrating with {len(seen)}/{len(self._corner_ids)} "
+                        f"corners; missing {missing}. Result may be less accurate."
+                    )
+                self._calibrate(marker_poses, seen)
             else:
-                missing = [m for m in self._corner_ids if m not in marker_poses]
                 self.get_logger().warn(
-                    f"Waiting for calibration — missing corner IDs: {missing}",
+                    f"Waiting for calibration — need >=3 corners, "
+                    f"have {len(seen)} (missing {missing}).",
                     throttle_duration_sec=5.0,
                 )
             return
@@ -391,17 +401,37 @@ class GroundLocalizer(Node):
         )
         return P_world
 
-    def _calibrate(self, marker_poses: dict[int, dict]) -> None:
-        """SVD-align measured tag tvecs to the known world layout."""
-        self.get_logger().info("Calibrating world frame via SVD…")
+    def _calibrate(self, marker_poses: dict[int, dict], seen_ids: list[int]) -> None:
+        """SVD-align measured tag tvecs to the known world layout.
 
-        # Row order must match self._P_world (which was built in
-        # self._corner_ids order).
+        ``seen_ids`` is the subset of ``self._corner_ids`` currently detected
+        (length >= 3). Only those rows of ``self._P_world`` are used.
+        """
+        self.get_logger().info(
+            f"Calibrating world frame via SVD using {len(seen_ids)} corners: {seen_ids}"
+        )
+
+        # Pick the matching rows of P_world (preserving corner_ids order).
+        idx = [self._corner_ids.index(cid) for cid in seen_ids]
+        P_world = self._P_world[idx]
         P_cam = np.array(
-            [marker_poses[mid]["tvec"] for mid in self._corner_ids],
+            [marker_poses[cid]["tvec"] for cid in seen_ids],
             dtype=np.float64,
         )
-        P_world = self._P_world
+
+        # With exactly 3 points, refuse to proceed if they're collinear —
+        # SVD returns a degenerate transform (rotation about the line is
+        # unconstrained) and downstream world poses become garbage.
+        if len(seen_ids) == 3:
+            v1 = P_world[1] - P_world[0]
+            v2 = P_world[2] - P_world[0]
+            area = float(np.linalg.norm(np.cross(v1, v2)))
+            if area < 1e-6:
+                self.get_logger().warn(
+                    f"3 visible corners {seen_ids} are collinear in the world "
+                    f"frame — cannot calibrate. Waiting for a 4th corner."
+                )
+                return
 
         T_cam_from_world = rigid_transform_svd(P_world, P_cam)
         self._T_world_from_cam = np.linalg.inv(T_cam_from_world)
@@ -422,13 +452,13 @@ class GroundLocalizer(Node):
         rms_mm = float(np.sqrt(np.mean(errs ** 2)) * 1000.0)
         per_tag = ", ".join(
             f"{cid}:{e * 1000.0:.1f}mm"
-            for cid, e in zip(self._corner_ids, errs)
+            for cid, e in zip(seen_ids, errs)
         )
 
         self._calibrated = True
         self.get_logger().info(
-            f"Calibration complete. Residuals max={max_mm:.1f}mm "
-            f"rms={rms_mm:.1f}mm per-tag=[{per_tag}]"
+            f"Calibration complete ({len(seen_ids)} corners). "
+            f"Residuals max={max_mm:.1f}mm rms={rms_mm:.1f}mm per-tag=[{per_tag}]"
         )
 
     # ── Detection publishing ──────────────────────────────────────────────
