@@ -2,6 +2,14 @@
 \usepackage{tikz}
 \usepackage{amsmath}
 \usetikzlibrary{shapes.geometric, arrows, positioning}
+\usepackage{textcomp} % Required for the upquote option
+\usepackage{listings}
+\lstset{
+    basicstyle=\ttfamily,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true
+}
 
 \title{Sensor Fusion: Integrating IMU and ArUco-Based GPS}
 \subtitle{MAE 162E Capstone}
@@ -49,14 +57,14 @@
     
     \textbf{Orientation Fusion:}
     \begin{equation*}
-        \hat{\theta}_{\text{fused}} = \theta_{\text{odom}} + \alpha \cdot \text{wrap}(\theta_{\text{imu}} - \theta_{\text{odom}})
+        \hat{\theta}_{\text{fused}} = \theta_{\text{odom}} + \alpha_{\text{orientation}} \cdot \text{wrap}(\theta_{\text{imu}} - \theta_{\text{odom}})
     \end{equation*}
     \textit{Note: \texttt{wrap()} folds the angle difference into $[-\pi, +\pi]$ to prevent discontinuities.}
     
     \vspace{0.5cm}
     \textbf{Position Fusion:}
     \begin{equation*}
-        \hat{\mathbf{p}}_{\text{fused}} = \mathbf{p}_{\text{odom}} + \alpha_{\text{pos}} \cdot (\mathbf{p}_{\text{GPS}} - \mathbf{p}_{\text{odom}})
+        \hat{\mathbf{p}}_{\text{fused}} = \mathbf{p}_{\text{odom}} + \alpha_{\text{position}} \cdot (\mathbf{p}_{\text{GPS}} - \mathbf{p}_{\text{odom}})
     \end{equation*}
 \end{frame}
 
@@ -66,7 +74,7 @@
     \vspace{0.3cm}
     \begin{itemize}
         \item \textbf{$\alpha = 0$:} Pure odometry (no external correction).
-        \item \textbf{$\alpha = 1$:} Pure absolute sensor (snaps to reading every tick, highly noisy).
+        \item \textbf{$\alpha = 1$:} Pure absolute sensor (snaps to reading every tick, noisy and slow update rate).
         \item \textbf{Small $\alpha$ (e.g., 0.02):} Gentle long-term drift correction. The absolute sensor slowly pulls the estimate toward the truth without introducing moment-to-moment control noise.
     \end{itemize}
 
@@ -118,8 +126,8 @@
 
 \begin{frame}{Coordinate Frames \& GPS Alignment}
     \begin{itemize}
-        \item \textbf{World/Arena Frame:} Origin $(0,0)$ at corner anchor~0; $x$-axis toward corner~1; $y$-axis toward corner~2 (toward the ramp).
-        \item \textbf{Starting orientation:} Robot must face the positive $y$ direction (toward the ramp) $\Rightarrow$ \texttt{INITIAL\_THETA\_DEG = 90.0} in \texttt{main.py}.  No change needed if placed correctly at the taped start.
+        \item \textbf{World/Arena Frame:} Origin $(0,0)$ at corner anchor~0; $x$-axis toward corner~1; $y$-axis toward corner~2 (toward the wall).
+        \item \textbf{Starting orientation:} Robot must face the positive $y$ direction (towards the wall) $\Rightarrow$ \texttt{INITIAL\_THETA\_DEG = 90.0} in \texttt{main.py}.  No change needed if placed correctly at the taped start.
         \item \textbf{GPS offset:} Pre-measured for the venue and already set in \texttt{test\_position\_fusion.py} and \texttt{main.py}. \textbf{Do not change.}
         \begin{itemize}
             \item \texttt{GPS\_OFFSET\_X\_MM = 609.6}
@@ -130,39 +138,33 @@
 \end{frame}
 
 \begin{frame}[fragile]{Commands for Fusion Tuning}
-    \textbf{Terminal 1 (inside Docker) --- start bridge every time:}
+    \item \textbf{Terminal 1 (inside Docker) --- start bridge every time:}
     \begin{verbatim}
-docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
-docker compose exec ros2_runtime bash
 ros2 run bridge bridge
     \end{verbatim}
-
-    \textbf{Terminal 2 (inside Docker) --- run the desired test:}
+    \item \textbf{Terminal 2 (inside Docker) --- run the desired test:}
     \begin{verbatim}
-docker compose exec ros2_runtime bash
 ros2 launch robot test_position_fusion.launch.py
 # or
 ros2 launch robot test_orientation_fusion.launch.py
     \end{verbatim}
-
-    \textbf{Viewing results (outside Docker, in VS Code terminal):}
+    \item \textbf{Viewing results (outside Docker, in VS Code terminal):}
     \begin{itemize}
         \item Position fusion: image already in \texttt{\textasciitilde/Project-NUEVO/} --- Ctrl-click to open.
         \item Orientation fusion / trajectory: copy first, then Ctrl-click:
     \end{itemize}
     \begin{verbatim}
-docker cp docker-ros2_runtime-1:/root/orientation_fusion_test_result.png \
-    ~/Project-NUEVO/
-docker cp docker-ros2_runtime-1:/ros2_ws/trajectory.png ~/Project-NUEVO/
+docker cp docker-ros2_runtime-1:
+/root/orientation_fusion_test_result.png ~/Project-NUEVO/
     \end{verbatim}
 \end{frame}
 
 \begin{frame}{What to Tune in Each Test}
     \begin{itemize}
-        \item \textbf{Position fusion:} edit \texttt{POSITION\_ALPHA} in \texttt{robot.py} (class constant), then relaunch.
-        \item \textbf{Orientation fusion (learning exercise):} edit \texttt{FUSION\_ALPHA} in \texttt{test\_orientation\_fusion.py}. This does \emph{not} affect the actual robot run (\texttt{ORIENTATION\_ALPHA = 0.0} in \texttt{robot.py}).
+        \item \textbf{Position fusion:} edit \texttt{POSITION\_FUSION\_ALPHA} in \texttt{test\_position\_fusion.py}
+        \item \textbf{Orientation fusion:} edit \texttt{ORIENTATION\_FUSION\_ALPHA} in \texttt{test\_orientation\_fusion.py}. 
         \item \textbf{Position test workflow:} robot drives 1000~mm straight; saves \texttt{position\_fusion\_test\_result.png} directly to \texttt{\textasciitilde/Project-NUEVO/}.
-        \item \textbf{Orientation test workflow:} robot drives two circles; result saved inside Docker --- requires \texttt{docker cp} to view.
+        \item \textbf{Orientation test workflow:} robot turns 180 degrees; result saved inside Docker --- requires \texttt{docker cp} to view.
         \item \textbf{For the course run:} set \texttt{TAG\_ID} in \texttt{main.py} and tune \texttt{POSITION\_ALPHA} in \texttt{robot.py}.  Everything else can stay at its default.
     \end{itemize}
 \end{frame}
@@ -175,7 +177,7 @@ docker cp docker-ros2_runtime-1:/ros2_ws/trajectory.png ~/Project-NUEVO/
         \texttt{TAG\_ID} & \texttt{main.py} & Set to your group's assigned tag ID \\
         \texttt{POSITION\_ALPHA} & \texttt{robot.py} & Tune (0.0--1.0); default 0.10 \\
         \texttt{ORIENTATION\_ALPHA} & \texttt{robot.py} & Leave at 0.0 (IMU unreliable) \\
-        \texttt{INITIAL\_THETA\_DEG} & \texttt{main.py} & Leave at 90.0 (face $+y$, toward ramp) \\
+        \texttt{INITIAL\_THETA\_DEG} & \texttt{main.py} & Leave at 90.0 (face $+y$, toward wall) \\
         \texttt{TAG\_X\_OFFSET\_MM} & \texttt{robot.py} & 0.0 if tag centred on axle midpoint \\
         \texttt{TAG\_Y\_OFFSET\_MM} & \texttt{robot.py} & 0.0 if tag centred on axle midpoint \\
         \texttt{IMU\_Z\_DOWN} & \texttt{robot.py} & False (chip faces up); optional \\
@@ -197,7 +199,7 @@ docker cp docker-ros2_runtime-1:/ros2_ws/trajectory.png ~/Project-NUEVO/
     \begin{itemize}
         \item If fused Y barely corrects back toward the floor markers, raise $\alpha_{\text{pos}}$.
         \item If the fused path snaps sideways or chatters when GPS is active, lower $\alpha_{\text{pos}}$.
-        \item If GPS is never acquired, the run is not useful for alpha tuning.
+        \item Make sure to keep it between the coordinate markers so that GPS sees it. If GPS is never acquired, the run is not useful for alpha tuning.
     \end{itemize}
 
     \vspace{0.2cm}
@@ -211,7 +213,6 @@ docker cp docker-ros2_runtime-1:/ros2_ws/trajectory.png ~/Project-NUEVO/
 
 \begin{frame}{Dead Reckoning vs. Sensor Fusion}
     \centering
-    % TODO: Upload your plot and change 'localization_plot.png' to your filename
     \includegraphics[width=0.5\textwidth]{figures/dead_reckoning_vs_sensor_fusion.jpg}
     
     \vspace{0.3cm}
@@ -233,3 +234,4 @@ docker cp docker-ros2_runtime-1:/ros2_ws/trajectory.png ~/Project-NUEVO/
 \end{frame}
 
 \end{document}
+

@@ -23,6 +23,15 @@
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric}
 
 % ─── Code listing style ────────────────────────────────────────────────────────
+\usepackage{textcomp} % Required for the upquote option
+
+\lstset{
+    basicstyle=\ttfamily,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true
+}
+
 \lstdefinestyle{python}{
   language=Python,
   basicstyle=\ttfamily\small,
@@ -259,8 +268,6 @@ the beginning of the run.
 
 \subsection{Other Fusion Strategies (for the Curious)}
 
-The codebase includes two additional strategies in \texttt{sensor\_fusion.py}
-that you are welcome to explore but are \emph{not} required for this lab:
 
 \begin{itemize}
   \item \textbf{Adaptive Complementary Filter} ---
@@ -348,7 +355,7 @@ using computer vision:
         world-frame coordinate system, with origin $(0, 0)$ at corner~0,
         $x$ pointing toward corner~1, and $y$ pointing toward corner~2.
 
-  \item \textbf{Rover markers (IDs 11--18):} Each robot group has one unique
+  \item \textbf{Rover markers (IDs 11--26):} Each robot group has one unique
         marker mounted flat and visible from above.
         The Jetson detects it, projects its position onto the ground plane via
         homography, and reports $(x, y, \theta)$ in metres.
@@ -381,8 +388,7 @@ GPS_OFFSET_Y_MM = -304.8
 
 \begin{notebox}
   \textbf{You do not need to change the GPS offset.}
-  These values are pre-measured for the current venue and are already set in
-  both \texttt{test\_position\_fusion.py} and \texttt{main.py}.
+  These values are pre-measured for the current venue and are already set.
 \end{notebox}
 
 \subsection{Venue and Coordinate System}
@@ -562,8 +568,7 @@ Pull these changes from upstream before beginning (Section~\ref{sec:fetch}).
     firmware/arduino/src/config.h
       & Modified & Set \texttt{IMU\_ENABLED~1} \\[2pt]
     ros2\_ws/src/robot/robot/sensor\_fusion.py
-      & \textbf{New} & ComplementaryFilter, AdaptiveComplementaryFilter,
-        HeadingKalmanFilter \\[2pt]
+      & \textbf{New} & OrientationComplementaryFilter, PositionComplementaryFilter \\[2pt]
     ros2\_ws/src/robot/robot/robot.py
       & Modified & IMU/GPS subscription callbacks, fusion logic,
         \texttt{/fused\_kinematics} publisher \\[2pt]
@@ -667,6 +672,21 @@ I\textsuperscript{2}C wire assembly.
 %   \texttt{config.h} --- no change needed.
 % \end{notebox}
 
+\subsection{IMU Calibration}
+
+The IMU must be calibrated before any fusion test will work
+correctly.
+
+\begin{enumerate}
+  \item Start the Docker stack and bring the bridge up:
+\begin{lstlisting}[style=bash]
+docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
+source ros2_ws/docker/enter_ros2.sh rpi
+ros2 run bridge bridge
+\end{lstlisting}
+  \item In the NUEVO front end UI, you should see the IMU show up. Calibration can be performed from there.
+\end{enumerate}
+
 \subsection{Mounting the ArUco Tag}
 
 \begin{enumerate}
@@ -701,20 +721,7 @@ TAG_Y_OFFSET_MM = 0.0  # sideways offset of tag from wheel-axle centre (mm)
     \label{fig:aruco-mounting}
 \end{figure}
 
-\subsection{IMU Calibration}
 
-The IMU must be calibrated before any fusion test will work
-correctly.
-
-\begin{enumerate}
-  \item Start the Docker stack and bring the bridge up:
-\begin{lstlisting}[style=bash]
-docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
-docker compose exec ros2_runtime bash
-ros2 run bridge bridge
-\end{lstlisting}
-  \item In the NUEVO front end UI, you should see the IMU show up. Calibration can be performed from there.
-\end{enumerate}
 
 % \begin{notebox}
 %   Perform calibration on the actual arena surface, away from large metal
@@ -749,32 +756,33 @@ ros2 run bridge bridge
 
 \textbf{Procedure:}
 \begin{enumerate}
-  \item Start the Docker stack and, in one terminal inside the container,
+  \item Navigate to your \texttt{Project\_NUEVO} directory and start the docker container
+\begin{lstlisting} [style=bash]
+COMPOSE=ros2_ws/docker/docker-compose.rpi.yml
+docker compose -f $COMPOSE build
+docker compose -f $COMPOSE up -d
+\end{lstlisting}
+  \item In one terminal, go into the docker container and
         start the bridge:
 \begin{lstlisting}[style=bash]
-docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
-docker compose exec ros2_runtime bash
+source ros2_ws\docker\enter_ros2.sh rpi
 ros2 run bridge bridge
 \end{lstlisting}
   \item Open \texttt{ros2\_ws/src/robot/robot/test\_orientation\_fusion.py}
         and set the fusion weight (FUSION\_ALPHA) at the top of the file:
 \begin{lstlisting}[style=python, caption={Tunable parameters in test\_orientation\_fusion.py}]
-CIRCLE_RADIUS_MM  = 300.0   # mm
-DRIVE_SPEED_MM_S  = 100.0   # mm/s
-NUM_LAPS          = 2
 FUSION_ALPHA      = 0.02    # <-- edit this value (0.0 to 1.0)
 \end{lstlisting}
-  \item In a \textbf{second terminal} inside the container, launch the test:
+  \item In a \textbf{second terminal} launch the test:
 \begin{lstlisting}[style=bash]
-docker compose exec ros2_runtime bash
+source ros2_ws/docker/enter_ros2.sh rpi
 ros2 launch robot test_orientation_fusion.launch.py
 \end{lstlisting}
-        The robot will drive two circles of radius 300~mm at 100~mm/s
-        (approximately 19~seconds per lap).
+        The robot will make a $180^\circ$ turn.
   \item After the test finishes, copy the result image to the host and view
         it in VS~Code.  Run the following \textbf{outside Docker} in a
         VS~Code terminal:
-\begin{lstlisting}[style=bash]
+\begin{lstlisting} [style=bash]
 docker cp docker-ros2_runtime-1:/root/orientation_fusion_test_result.png \
     ~/Project-NUEVO/
 \end{lstlisting}
@@ -813,8 +821,8 @@ docker cp docker-ros2_runtime-1:/root/orientation_fusion_test_result.png \
   \textbf{Orientation fusion is disabled in the actual robot run
   (\texttt{ORIENTATION\_ALPHA = 0.0} in \texttt{robot.py}).}
   The IMU magnetometer does not operate accurately in the presence of the
-  strong magnetic fields produced by the motors and nearby metal surfaces in
-  the current lab.  Setting \texttt{ORIENTATION\_ALPHA = 0} means the robot
+  strong magnetic fields in
+  the current room.  Setting \texttt{ORIENTATION\_ALPHA = 0} means the robot
   relies on pure wheel odometry for heading, avoiding IMU-induced errors.
   Task~1a is a learning exercise to understand the complementary filter
   trade-offs; you should \emph{not} set \texttt{ORIENTATION\_ALPHA > 0} in
@@ -864,12 +872,12 @@ during the test.
         container:
 \begin{lstlisting}[style=bash]
 docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
-docker compose exec ros2_runtime bash
+source ros2_ws/docker/enter_ros2.sh rpi
 ros2 run bridge bridge
 \end{lstlisting}
   \item In a \textbf{second terminal} inside the container, launch the test:
 \begin{lstlisting}[style=bash]
-docker compose exec ros2_runtime bash
+source ros2_ws/docker/enter_ros2.sh rpi
 ros2 launch robot test_position_fusion.launch.py
 \end{lstlisting}
         The robot drives straight forward for 1000~mm.
@@ -925,10 +933,12 @@ Open \texttt{ros2\_ws/src/robot/robot/main.py}.
   The top of \texttt{main.py} sets
 \begin{lstlisting}[style=python]
 INITIAL_THETA_DEG = 90.0
-\end{lstlisting}
+\end{lstlisting}sudo debugfs /dev/mmcblk0p2
+
   This tells the odometry system that the robot starts pointing at $90^\circ$,
   which corresponds to the positive $y$ direction in the arena frame (toward
-  the ramp) --- see Section~\ref{sec:venue-coords}.
+  the ramp) --- see Section~\ref{sec:venue-coords}.sudo debugfs /dev/mmcblk0p2
+
   \textbf{You do not need to change this value} provided you place the robot at
   the taped starting position with the robot pointing forward (toward the ramp).
 \end{notebox}
@@ -962,47 +972,6 @@ def run(robot: Robot) -> None:
 \end{lstlisting}
 \end{notebox}
 
-\subsubsection{Completing the MOVING State}
-
-The \texttt{MOVING} state in \texttt{main.py} contains step-by-step
-scaffolding (Steps 1--8) that you must implement.
-The core loop reads the fused pose, advances the path, computes a lookahead
-point, calculates velocity commands, and checks for goal arrival.
-
-\begin{lstlisting}[style=python, caption={MOVING state skeleton in main.py (complete Steps 1--8)}]
-elif state == "MOVING":
-    show_moving_leds(robot)
-
-    # Step 1: Read fused pose
-    current_x, current_y, current_theta_deg = robot.get_pose()
-
-    # Step 2: Convert heading to radians
-    current_theta_rad = math.radians(current_theta_deg)
-
-    # Step 3: Advance the remaining path
-    remaining_path = planner1._advance_remaining_path(
-        remaining_path, current_x, current_y, advance_radius=20.0)
-
-    # Step 4: Compute lookahead point
-    current_pursuit_x, current_pursuit_y = \
-        planner1._lookahead_point(
-            remaining_path, current_x, current_y, current_theta_rad)
-
-    # Step 5: Compute velocity command
-    lin_vel, ang_vel = planner1.compute_velocity(
-        current_x, current_y, current_theta_rad,
-        current_pursuit_x, current_pursuit_y)
-
-    # Step 6: Send velocity command
-    robot.set_velocity(lin_vel, math.degrees(ang_vel))
-
-    # Step 7: Check goal reached
-    if planner1.CurrentTargetReached(
-            current_pursuit_x, current_pursuit_y,
-            current_x, current_y):
-        robot.stop()
-        state = "IDLE"
-\end{lstlisting}
 
 \subsubsection{Running the Course}
 
@@ -1011,13 +980,13 @@ elif state == "MOVING":
   \item In one terminal inside the Docker container, start the bridge:
 \begin{lstlisting}[style=bash]
 docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
-docker compose exec ros2_runtime bash
+source ros2_ws/docker/enter_ros2.sh rpi
 ros2 run bridge bridge
 \end{lstlisting}
   \item In a \textbf{second terminal} inside the container, launch the full
         robot stack:
 \begin{lstlisting}[style=bash]
-docker compose exec ros2_runtime bash
+source ros2_ws/docker/enter_ros2.sh rpi
 ros2 launch robot robot.launch.py
 \end{lstlisting}
   \item Verify that the bridge is connected and the firmware is in
@@ -1027,7 +996,7 @@ ros2 launch robot robot.launch.py
   \item Monitor the console output for pose and pursuit-point debug prints.
   \item If the robot deviates significantly, stop it with Ctrl-C, adjust
         waypoints or fusion weights, and relaunch.
-  \item After the run, copy the trajectory plot to the host and view it in
+  \item After the run, press \textbf{BTN\_2} to stop the robot processes and copy the trajectory plot to the host and view it in
         VS~Code.  Run the following \textbf{outside Docker} in a VS~Code
         terminal:
 \begin{lstlisting}[style=bash]
@@ -1134,3 +1103,4 @@ The demonstration must satisfy all of the following criteria:
 \end{tabularx}
 
 \end{document}
+
