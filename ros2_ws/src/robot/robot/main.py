@@ -24,6 +24,10 @@ LEFT_WHEEL_DIR_INVERTED = False
 RIGHT_WHEEL_MOTOR = Motor.DC_M2
 RIGHT_WHEEL_DIR_INVERTED = True
 
+KP = 0.228
+KI = 4.45
+KD = 0
+
 
 def configure_robot(robot: Robot) -> None:
     robot.set_unit(POSITION_UNIT)
@@ -62,6 +66,10 @@ def run(robot: Robot) -> None:
     configure_robot(robot)
     robot.set_orientation_fusion_alpha(0.0)        # heading fusion weight (tune in Task 1a) SET TO 0.0 TO DISABLE HEADING FUSION SINCE IMU IS NOT WORKING WELL
     robot.set_position_fusion_alpha(0.5)     # position fusion weight (tune in Task 1b)
+
+    # PID tuning
+    robot.set_pid_gains(Motor.DC_M1, DCPidLoop.VELOCITY, KP, KI, KD)
+    robot.set_pid_gains(Motor.DC_M2, DCPidLoop.VELOCITY, KP, KI, KD)
 
     state = "INIT"
     drive_handle = None
