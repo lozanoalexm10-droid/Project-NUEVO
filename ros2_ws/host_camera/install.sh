@@ -174,7 +174,8 @@ log "camera service status"
 "${sudo_cmd[@]}" systemctl --no-pager --lines=20 status pi-camera-feed.service || true
 
 if [[ "$camera_config_changed" -eq 1 ]]; then
-    warn "camera boot config changed; reboot the Pi if the service cannot see the camera"
+    warn "camera boot config changed; reboot the Pi before trusting camera checks"
+    warn "do not expect ./ros2_ws/host_camera/check.sh to pass until after that reboot"
 fi
 
 if [[ -n "$real_user" && "$real_user" != "root" ]]; then
@@ -183,4 +184,7 @@ fi
 
 log "setup complete"
 log "virtual camera: $video_node"
-log "sanity check: ./ros2_ws/host_camera/check.sh"
+log "next steps:"
+log "  1. if boot camera config was changed above, reboot the Pi"
+log "  2. build/start the ROS2 image: ./ros2_ws/docker/enter_ros2.sh --build rpi"
+log "  3. run the camera check: ./ros2_ws/host_camera/check.sh"

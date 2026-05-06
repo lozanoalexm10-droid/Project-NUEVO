@@ -18,6 +18,7 @@ It does **not** try to replace the full references in:
 - [`docs/ros2/rpi_setup.md`](../../ros2/rpi_setup.md)
 - [`docs/ros2/integration_test.md`](../../ros2/integration_test.md)
 - [`docs/ros2/troubleshooting.md`](../../ros2/troubleshooting.md)
+- [`GPS_LiDAR_COORDINATES.md`](GPS_LiDAR_COORDINATES.md) for robot, GPS tag, and LiDAR coordinate conventions
 
 ## 2. Basic Safety / Bring-Up Rules
 
@@ -99,6 +100,10 @@ Expected:
 - `/dev/ttyAMA0` exists
 - `kernel.sysrq` is `0`
 
+If you need to calibrate the GPS tag or LiDAR mounting geometry after bring-up,
+use:
+- [`GPS_LiDAR_COORDINATES.md`](GPS_LiDAR_COORDINATES.md)
+
 ## 6. Build and Start the Docker Image
 
 The two main helper scripts for managing the container are:
@@ -165,6 +170,12 @@ Run once on the Pi host:
 ```bash
 ./ros2_ws/host_camera/install.sh
 ```
+
+Reboot the Pi after installation:
+
+```bash
+sudo reboot
+``` 
 
 Then verify:
 

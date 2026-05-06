@@ -66,6 +66,7 @@ if command -v rpicam-hello >/dev/null 2>&1; then
         pass "native libcamera can enumerate a camera"
     else
         fail "native libcamera did not report a camera"
+        info "if ./ros2_ws/host_camera/install.sh just changed boot camera config, reboot the Pi first"
     fi
 else
     fail "rpicam-hello is not installed; run ./ros2_ws/host_camera/install.sh"
@@ -149,7 +150,7 @@ docker_camera_run() {
 
 if command -v docker >/dev/null 2>&1; then
     if ! docker image inspect "$PI_CAMERA_DOCKER_IMAGE" >/dev/null 2>&1; then
-        fail "Docker image '$PI_CAMERA_DOCKER_IMAGE' is not built; run docker compose -f ros2_ws/docker/docker-compose.rpi.yml build"
+        fail "Docker image '$PI_CAMERA_DOCKER_IMAGE' is not built; run ./ros2_ws/docker/enter_ros2.sh --build rpi first"
     elif [[ ! -c "$PI_CAMERA_DEVICE" ]]; then
         fail "cannot test Docker access because $PI_CAMERA_DEVICE does not exist on the host"
     else

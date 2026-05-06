@@ -61,9 +61,14 @@ as the Project NUEVO virtual camera, installs the native Ubuntu camera packages
 ffmpeg), and enables `nuevo-pi-camera-feed.service` so the feed starts
 automatically at boot and restarts after failures.
 
-After the ROS2 container is running, verify both host and Docker access:
+If the installer changed boot camera config, reboot the Pi before validating
+the camera path.
+
+After the ROS2 image is built/running, verify both host and Docker access:
 
 ```bash
+./ros2_ws/docker/enter_ros2.sh --build rpi
+exit
 ./ros2_ws/host_camera/check.sh
 ```
 
@@ -77,7 +82,31 @@ Expected test images:
 Useful service commands:
 
 ```bash
-sudo systemctl status nuevo-pi-camera-feed
-sudo systemctl restart nuevo-pi-camera-feed
-sudo journalctl -u nuevo-pi-camera-feed -f
+sudo systemctl status pi-camera-feed.service
+sudo systemctl restart pi-camera-feed.service
+sudo journalctl -u pi-camera-feed.service -f
 ```
+
+### Camera compatibility note
+
+Default camera policy:
+
+```text
+camera_auto_detect=1
+display_auto_detect=1
+```
+
+That keeps most camera modules working without a hardcoded overlay.
+
+Known exception in the current lab setup:
+- **Arducam 12MP IMX708 Camera Module 3** on Pi 5 may fail with auto-detect
+- validated fallback:
+
+```text
+camera_auto_detect=0
+dtoverlay=imx708,cam0
+display_auto_detect=1
+```
+
+This fallback is module-specific. Do not make it the global default unless that
+camera is the standard lab hardware.

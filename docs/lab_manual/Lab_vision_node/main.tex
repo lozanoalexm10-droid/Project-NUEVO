@@ -65,7 +65,7 @@
 \makeatother
 
 \title{Lab: Vision Node}
-\version{0.1.0}
+\version{0.1.1}
 \author{162 TAs and Maclab members}
 \softwarelogo{\includegraphics[width=8cm]{figures/capstone}}
 
@@ -194,6 +194,11 @@ From the repository root on the Raspberry Pi:
 The script installs \texttt{rpicam-apps}, \texttt{ffmpeg},
 \texttt{v4l2loopback}, and a systemd service that starts automatically at boot.
 It will prompt for \texttt{sudo} if needed.
+
+Reboot the Pi if needed. 
+\begin{minted}{bash}
+sudo reboot
+\end{minted}
 
 \subsubsection*{1.2 Verify the Camera\onrpi}
 
