@@ -155,6 +155,7 @@ def run(robot: Robot) -> None:
             if robot.get_button(Button.BTN_2):
                 print("BTN_2 pressed. Stopping robot and saving trajectory.")
                 robot.shutdown()
+                return
 
             print("[FSM] IDLE - Auto-starting pre-obstacle segment.")
             print("[FSM] MOVING_PRE_OBSTACLE")
@@ -175,8 +176,6 @@ def run(robot: Robot) -> None:
                 )
 
                 state = "MOVING_OBSTACLE"
-            else:
-                state = "MOVING_PRE_OBSTACLE"
 
         elif state == "MOVING_OBSTACLE":
             show_moving_leds(robot)
@@ -192,8 +191,6 @@ def run(robot: Robot) -> None:
                 )
 
                 state = "MOVING_POST_OBSTACLE"
-            else:
-                state = "MOVING_OBSTACLE"
 
         elif state == "MOVING_POST_OBSTACLE":
             show_moving_leds(robot)
@@ -203,8 +200,6 @@ def run(robot: Robot) -> None:
                 print("[FSM] Full venue route complete.")
                 robot.stop()
                 state = "DONE"
-            else:
-                state = "MOVING_POST_OBSTACLE"
 
         elif state == "DONE":
             show_idle_leds(robot)
