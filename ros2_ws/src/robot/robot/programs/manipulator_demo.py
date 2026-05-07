@@ -156,19 +156,8 @@ def run(robot: Robot) -> None:  # noqa: C901
             robot.set_led(LED.ORANGE, 255)
             robot.step_enable(TURNTABLE_STEPPER)
             robot.step_set_config(TURNTABLE_STEPPER, TURNTABLE_MAX_VELOCITY, TURNTABLE_ACCELERATION)
-            print("[DEMO] ARM_HOME — homing turntable...")
-            homed = robot.step_home(
-                TURNTABLE_STEPPER,
-                direction=-1,
-                home_velocity=500,
-                backoff_steps=50,
-                timeout=30.0,
-            )
-            if not homed:
-                print("[DEMO] ARM_HOME — turntable home timed out. Aborting.")
-                state = "RESTOWING"
-                state_entry_time = time.monotonic()
-            else:
+            print("[DEMO] ARM_HOME — manual home assumed (align turntable to forward mark before run).")
+            if True:
                 robot.enable_servo(SHOULDER_CHANNEL)
                 robot.enable_servo(ELBOW_CHANNEL)
                 robot.enable_servo(GRIPPER_CHANNEL)

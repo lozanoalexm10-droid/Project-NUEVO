@@ -338,22 +338,11 @@ def run(robot: Robot) -> None:  # noqa: C901
 
         # ── ARM_HOME ──────────────────────────────────────────────────────────
         elif state == "ARM_HOME":
-            # Configure and home turntable stepper (blocking, 30 s timeout).
+            # Manual homing: turntable must be aligned to the forward mark before run.
             robot.step_enable(TURNTABLE_STEPPER)
             robot.step_set_config(TURNTABLE_STEPPER, TURNTABLE_MAX_VELOCITY, TURNTABLE_ACCELERATION)
-            print("[FSM] ARM_HOME — homing turntable...")
-            homed = robot.step_home(
-                TURNTABLE_STEPPER,
-                direction=-1,
-                home_velocity=500,
-                backoff_steps=50,
-                timeout=30.0,
-            )
-            if not homed:
-                print("[FSM] ARM_HOME — turntable home timed out. Restowing.")
-                state = "RESTOWING"
-                state_entry_time = time.monotonic()
-            else:
+            print("[FSM] ARM_HOME — manual home assumed (align turntable to forward mark before run).")
+            if True:
                 # Enable servos and move to search pose.
                 robot.enable_servo(SHOULDER_CHANNEL)
                 robot.enable_servo(ELBOW_CHANNEL)

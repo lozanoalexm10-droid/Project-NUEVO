@@ -5,11 +5,10 @@ Edit channel/pin assignments here — all tests import from this file.
 from __future__ import annotations
 
 from robot.arm_kinematics import ArmGeometry
-from robot.hardware_map import Limit, ServoChannel, Stepper
+from robot.hardware_map import ServoChannel, Stepper
 
 # ── Turntable ─────────────────────────────────────────────────────────────────
 TURNTABLE_STEPPER       = Stepper.STEPPER_1
-TURNTABLE_HOME_LIMIT    = Limit.LIM_1       # limit switch at the 0° hard stop
 MOTOR_STEPS_PER_REV     = 200               # native steps (1.8°/step)
 MICROSTEP               = 16                # confirm against firmware StepConfig
 PULLEY_RATIO            = 4.0               # GT2 belt: 4 motor revs per 1 turntable rev
@@ -92,10 +91,9 @@ ARM_CARRY_SHOULDER_DEG   = 100.0
 ARM_CARRY_ELBOW_DEG      = 90.0
 
 # ── Turntable home offset ─────────────────────────────────────────────────────
-# After step_home(), position 0 = limit switch hard stop.
-# This offset is the angle from that hard stop to robot forward direction.
-# Set during turntable homing calibration.
-TURNTABLE_HOME_OFFSET_DEG = 90.0   # TODO: measure after first homing run
+# Manual homing: align the turntable to the forward mark before each run.
+# Position 0 = wherever the turntable sits at startup.
+TURNTABLE_HOME_OFFSET_DEG = 0.0
 
 # ── Target geometry (measure from competition venue, all mm, robot frame) ─────
 # Robot frame: x = forward, y = left, z = up; origin = turntable axis at base plate.
