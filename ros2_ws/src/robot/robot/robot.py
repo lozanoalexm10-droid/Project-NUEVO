@@ -167,7 +167,7 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     DEFAULT_RIGHT_WHEEL_MOTOR: int = int(HW_RIGHT_WHEEL_MOTOR)
     DEFAULT_LEFT_WHEEL_DIR_INVERTED:  bool = HW_LEFT_WHEEL_DIR_INVERTED
     DEFAULT_RIGHT_WHEEL_DIR_INVERTED: bool = HW_RIGHT_WHEEL_DIR_INVERTED
-    POSITION_ALPHA    = 0.50   # complementary filter GPS weight for position fusion
+    POSITION_ALPHA    = 0.10   # complementary filter GPS weight for position fusion
     ORIENTATION_ALPHA = 0.0    # complementary filter IMU weight for orientation fusion
     TAG_X_OFFSET_MM   = TAG_BODY_OFFSET_X_MM   # ArUco tag x in robot body frame (mm, +x = forward)
     TAG_Y_OFFSET_MM   = TAG_BODY_OFFSET_Y_MM   # ArUco tag y in robot body frame (mm, +y = left)
