@@ -12,4 +12,4 @@
 # TODO: tunable parameters (PID gains, path waypoints, servo angles, step counts)
 # will move to a YAML config file so this file stays a one-liner permanently.
 
-from robot.tests.scripts.lane_switch_obstacle_test import run  
+from robot.tests.scripts.lane_switch_obstacle_test import run
