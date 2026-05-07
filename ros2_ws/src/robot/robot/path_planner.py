@@ -638,7 +638,7 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         x, y, theta = pose
         if len(obstacles_r) > 0:
             # lidar orientation due to installation is 180 deg rotated from robot forward, so rotate obstacles accordingly.
-            obstacles_r = (np.array([[np.cos(np.pi), -np.sin(np.pi)], [np.sin(np.pi), np.cos(np.pi)]]) @ obstacles_r.T).T 
+            obstacles_r = (np.array([[np.cos(-np.pi/2), -np.sin(-np.pi/2)], [np.sin(-np.pi/2), np.cos(-np.pi/2)]]) @ obstacles_r.T).T 
             
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
             obstacles_r = obstacles_r[np.abs(np.arctan2(obstacles_r[:,1],obstacles_r[:,0])) <= self.view_angle,:] # only consider obstacles in front of the robot within 180 deg FOV, which can help prevent the robot from being too conservative by reacting to obstacles behind it that are not in its path.
