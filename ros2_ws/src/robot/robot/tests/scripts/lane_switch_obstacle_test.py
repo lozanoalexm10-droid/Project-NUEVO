@@ -1,16 +1,8 @@
 """
-obstacle_avoidance.py — current lane-switch obstacle avoidance reference
-========================================================================
-Reference example for the obstacle-avoidance path that is currently used by the
-released Lab 5 robot flow.
-
-How to run:
-    cp examples/obstacle_avoidance.py main.py
-    ros2 run robot robot
-
-This example is intentionally close to the released lab behavior, but lives in
-`examples/` so the supported obstacle-avoidance configuration is documented in
-one place without editing each student's `main.py`.
+lane_switch_obstacle_test.py — lane-switch obstacle avoidance test routine
+===========================================================================
+Tests obstacle avoidance along a single straight segment with LiDAR enabled.
+Press BTN_1 to start, BTN_2 to stop and save trajectory.
 """
 
 from __future__ import annotations
@@ -69,6 +61,9 @@ def configure_robot(robot: Robot) -> None:
     robot.enable_lidar()
     robot.enable_gps()
     robot.set_tracked_tag_id(TAG_ID)
+
+    robot.set_orientation_fusion_alpha(0.0)
+    robot.set_position_fusion_alpha(0.10)
 
 
 def show_idle_leds(robot: Robot) -> None:

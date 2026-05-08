@@ -9,6 +9,8 @@ plugins/
 .codex
 .vscode/
 .local/
+.agents/
+.plugins/
 openspec/
 CLAUDE.md
 AGENTS.md

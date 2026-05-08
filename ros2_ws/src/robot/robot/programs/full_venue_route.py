@@ -71,9 +71,14 @@ def show_moving_leds(robot: Robot) -> None:
 
 
 def start_robot(robot: Robot) -> None:
+    current = robot.get_state()
+    if current in (FirmwareState.ESTOP, FirmwareState.ERROR):
+        robot.reset_estop()
     robot.set_state(FirmwareState.RUNNING)
     robot.reset_odometry()
-    robot.wait_for_pose_update(timeout=0.2)
+    if not robot.wait_for_odometry_reset(timeout=2.0):
+        print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
+        robot.wait_for_pose_update(timeout=0.5)
 
 
 PRE_OBSTACLE_PATH = [
@@ -131,34 +136,28 @@ def run(robot: Robot) -> None:
 
     state = "INIT"
     period = 1.0 / float(DEFAULT_FSM_HZ)
-    print(f"FSM period: {period:.3f} seconds")
     next_tick = time.monotonic()
+    state_entry_time = time.monotonic()
 
     while True:
         if state == "INIT":
             start_robot(robot)
-            print("[FSM] INIT (odometry reset)")
-
-            start_path_segment(
-                robot,
-                PRE_OBSTACLE_PATH,
-                obstacle_avoidance=False,
-            )
-
-            print("[FSM] Pre-obstacle path ready. Entering IDLE state.")
+            start_path_segment(robot, PRE_OBSTACLE_PATH, obstacle_avoidance=False)
+            print("[FSM] INIT complete — pre-obstacle path loaded. Auto-starts in 3 s.")
             state = "IDLE"
+            state_entry_time = time.monotonic()
 
         elif state == "IDLE":
             show_idle_leds(robot)
-            time.sleep(3)
-
             if robot.get_button(Button.BTN_2):
-                print("BTN_2 pressed. Stopping robot and saving trajectory.")
+                robot.stop()
                 robot.shutdown()
-
-            print("[FSM] IDLE - Auto-starting pre-obstacle segment.")
-            print("[FSM] MOVING_PRE_OBSTACLE")
-            state = "MOVING_PRE_OBSTACLE"
+                return
+            if time.monotonic() - state_entry_time >= 3.0:
+                print("[FSM] IDLE — auto-starting pre-obstacle segment.")
+                show_moving_leds(robot)
+                state = "MOVING_PRE_OBSTACLE"
+                state_entry_time = time.monotonic()
 
         elif state == "MOVING_PRE_OBSTACLE":
             show_moving_leds(robot)
@@ -166,17 +165,9 @@ def run(robot: Robot) -> None:
 
             if nav_state == "IDLE":
                 print("[FSM] Pre-obstacle segment complete. Starting obstacle field.")
-
-                start_path_segment(
-                    robot,
-                    OBSTACLE_FIELD_PATH,
-                    obstacle_avoidance=True,
-                    x_L=1565.0,
-                )
-
+                start_path_segment(robot, OBSTACLE_FIELD_PATH, obstacle_avoidance=True, x_L=1565.0)
                 state = "MOVING_OBSTACLE"
-            else:
-                state = "MOVING_PRE_OBSTACLE"
+                state_entry_time = time.monotonic()
 
         elif state == "MOVING_OBSTACLE":
             show_moving_leds(robot)
@@ -184,16 +175,9 @@ def run(robot: Robot) -> None:
 
             if nav_state == "IDLE":
                 print("[FSM] Obstacle field complete. Starting post-obstacle segment.")
-
-                start_path_segment(
-                    robot,
-                    POST_OBSTACLE_PATH,
-                    obstacle_avoidance=False,
-                )
-
+                start_path_segment(robot, POST_OBSTACLE_PATH, obstacle_avoidance=False)
                 state = "MOVING_POST_OBSTACLE"
-            else:
-                state = "MOVING_OBSTACLE"
+                state_entry_time = time.monotonic()
 
         elif state == "MOVING_POST_OBSTACLE":
             show_moving_leds(robot)
@@ -203,8 +187,7 @@ def run(robot: Robot) -> None:
                 print("[FSM] Full venue route complete.")
                 robot.stop()
                 state = "DONE"
-            else:
-                state = "MOVING_POST_OBSTACLE"
+                state_entry_time = time.monotonic()
 
         elif state == "DONE":
             show_idle_leds(robot)
