@@ -59,6 +59,9 @@ from robot.hardware_map import (
     RIGHT_WHEEL_MOTOR,
     StepMoveType,
     TAG_ID,
+    VELOCITY_KD,
+    VELOCITY_KI,
+    VELOCITY_KP,
     WHEEL_BASE,
     WHEEL_DIAMETER,
 )
@@ -107,10 +110,6 @@ from robot.tests.scripts._manipulator_config import (
 )
 from robot.util import densify_polyline
 
-# ── Drive tuning ──────────────────────────────────────────────────────────────
-VELOCITY_KP = 2.28
-VELOCITY_KI = 4.45
-VELOCITY_KD = 0.0
 
 # ── Waypoints (mm, robot odometry frame) ──────────────────────────────────────
 # Copy from full_venue_route.py — update to match competition venue layout.

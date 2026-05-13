@@ -14,14 +14,13 @@ from robot.hardware_map import (
     POSITION_UNIT,
     RIGHT_WHEEL_DIR_INVERTED,
     RIGHT_WHEEL_MOTOR,
+    TAG_ID,
+    VELOCITY_KD,
+    VELOCITY_KI,
+    VELOCITY_KP,
     WHEEL_BASE,
     WHEEL_DIAMETER,
-    TAG_ID,
 )
-
-VELOCITY_KP = 2.28
-VELOCITY_KI = 4.45
-VELOCITY_KD = 0.0
 
 from robot.robot import FirmwareState, Robot
 from robot.util import densify_polyline
