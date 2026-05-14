@@ -81,7 +81,7 @@ def start_robot(robot: Robot) -> None:
 
 
 PRE_OBSTACLE_PATH = [
-    (0.0, 0.0),
+    (0.0, 610.0),
     (0.0, 3660.0),
     (610.0, 3660.0),
     (610.0, 610.0),

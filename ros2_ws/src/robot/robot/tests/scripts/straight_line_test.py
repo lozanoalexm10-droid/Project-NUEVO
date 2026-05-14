@@ -19,7 +19,6 @@ from robot.hardware_map import (
     WHEEL_DIAMETER,
 )
 from robot.robot import FirmwareState, Robot
-from robot.util import densify_polyline
 
 # Edit PATH to drive any sequence of waypoints from the robot's starting position.
 # Initial heading is 90 deg (+Y is forward). One tile = 610 mm.
@@ -27,6 +26,10 @@ PATH = [
     (0.0, 0.0),
     (0.0, 3660.0),  # 6 tiles straight ahead
 ]
+
+VELOCITY_MM_S  = 90.0
+LOOKAHEAD_MM   = 150.0
+TOLERANCE_MM   = 30.0
 
 
 def run(robot: Robot) -> None:
@@ -50,7 +53,7 @@ def run(robot: Robot) -> None:
         robot.reset_estop()
     robot.set_state(FirmwareState.RUNNING)
 
-    robot.set_pid_gains(LEFT_WHEEL_MOTOR, DCPidLoop.VELOCITY, VELOCITY_KP, VELOCITY_KI, VELOCITY_KD)
+    robot.set_pid_gains(LEFT_WHEEL_MOTOR,  DCPidLoop.VELOCITY, VELOCITY_KP, VELOCITY_KI, VELOCITY_KD)
     robot.set_pid_gains(RIGHT_WHEEL_MOTOR, DCPidLoop.VELOCITY, VELOCITY_KP, VELOCITY_KI, VELOCITY_KD)
     time.sleep(0.2)
 
@@ -61,51 +64,27 @@ def run(robot: Robot) -> None:
     x0, y0, th0 = robot.get_odometry_pose()
     print(f"[START] pose = ({x0:.1f}, {y0:.1f}) mm  θ={th0:.1f}°")
 
-    path = densify_polyline(PATH, spacing=50.0)
-
-    robot._nav_follow_pp_path(
-        lookahead_distance=100.0,
-        max_linear_speed=90.0,
-        max_angular_speed=1.5,
-        goal_tolerance=20.0,
-        obstacles_range=450.0,
-        view_angle=0.0,
-        safe_dist=250.0,
-        avoidance_delay=150,
-        alpha_Ld=0.7,
-        offset=305.0,
-        lane_width=500.0,
-        obstacle_avoidance=False,
-        x_L=0.0,
-    )
-    robot._set_obstacle_avoidance_path(path)
-
-    state = "MOVING"
-    period = 1.0 / float(DEFAULT_FSM_HZ)
-    next_tick = time.monotonic()
-
     robot.set_led(LED.GREEN, 255)
     robot.set_led(LED.ORANGE, 0)
-    print(f"[FSM] MOVING — {len(path)} densified points")
+    print(f"[FSM] MOVING — {len(PATH)} waypoints via pure pursuit")
 
+    robot.purepursuit_follow_path(
+        waypoints=PATH,
+        velocity=VELOCITY_MM_S,
+        lookahead=LOOKAHEAD_MM,
+        tolerance=TOLERANCE_MM,
+        blocking=True,
+    )
+
+    robot.stop()
+    robot.set_led(LED.GREEN, 0)
+    robot.set_led(LED.ORANGE, 255)
+
+    x1, y1, th1 = robot.get_odometry_pose()
+    print(f"[DONE] pose = ({x1:.1f}, {y1:.1f}) mm  θ={th1:.1f}°")
+    print(f"[DONE] heading drift = {th1 - th0:.1f}°")
+
+    period = 1.0 / float(DEFAULT_FSM_HZ)
     while True:
-        if state == "MOVING":
-            nav_state = robot._nav_follow_pp_path_loop()
-            if nav_state == "IDLE":
-                robot.stop()
-                robot.set_led(LED.GREEN, 0)
-                robot.set_led(LED.ORANGE, 255)
-                x1, y1, th1 = robot.get_odometry_pose()
-                print(f"[DONE] pose = ({x1:.1f}, {y1:.1f}) mm  θ={th1:.1f}°")
-                print(f"[DONE] heading drift = {th1 - th0:.1f}°")
-                state = "DONE"
-
-        elif state == "DONE":
-            robot.stop()
-
-        next_tick += period
-        sleep_s = next_tick - time.monotonic()
-        if sleep_s > 0.0:
-            time.sleep(sleep_s)
-        else:
-            next_tick = time.monotonic()
+        robot.stop()
+        time.sleep(period)

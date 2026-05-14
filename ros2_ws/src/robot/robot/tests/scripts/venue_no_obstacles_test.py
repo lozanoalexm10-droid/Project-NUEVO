@@ -41,7 +41,7 @@ def configure_robot(robot: Robot) -> None:
     robot.set_tracked_tag_id(TAG_ID)
 
     robot.set_orientation_fusion_alpha(0.0)
-    robot.set_position_fusion_alpha(0.0)
+    robot.set_position_fusion_alpha(0.1)
 
 
 def show_idle_leds(robot: Robot) -> None:
@@ -85,12 +85,12 @@ def start_robot(robot: Robot) -> None:
 
 FULL_PATH = [
     (0.0, 0.0),
-    (0.0, 3660.0),
-    (610.0, 3660.0),
+    (0.0, 3110.0),
+    (610.0, 3110.0),
     (610.0, 610.0),
     (1565.0, 610.0),
-    (1565.0, 3660.0),
-    (2530.0, 3660.0),
+    (1565.0, 3110.0),
+    (2530.0, 3110.0),
     (2530.0, 610.0),
     (2745.0, 305.0),
 ]
@@ -111,24 +111,6 @@ def run(robot: Robot) -> None:
 
             path = densify_polyline(FULL_PATH, spacing=50.0)
 
-            robot._nav_follow_pp_path(
-                lookahead_distance=100.0,
-                max_linear_speed=90.0,
-                max_angular_speed=1.5,
-                goal_tolerance=20.0,
-                obstacles_range=450.0,
-                view_angle=0.0,
-                safe_dist=250.0,
-                avoidance_delay=150,
-                alpha_Ld=0.7,
-                offset=305.0,
-                lane_width=500.0,
-                obstacle_avoidance=False,
-                x_L=0.0,
-            )
-
-            robot._set_obstacle_avoidance_path(path)
-
             print("[FSM] Full path ready. Entering IDLE state.")
             state = "IDLE"
 
@@ -147,12 +129,18 @@ def run(robot: Robot) -> None:
 
         elif state == "MOVING":
             show_moving_leds(robot)
-            nav_state = robot._nav_follow_pp_path_loop()
-
-            if nav_state == "IDLE":
-                print("[FSM] Full venue route complete.")
-                robot.stop()
-                state = "DONE"
+            robot.purepursuit_follow_path(
+                waypoints=path,
+                velocity=130.0,
+                lookahead=250.0,
+                tolerance=20.0,
+                max_angular_rad_s=0.7,
+                advance_radius=80.0,
+                blocking=True,
+            )
+            print("[FSM] Full venue route complete.")
+            robot.stop()
+            state = "DONE"
 
         elif state == "DONE":
             show_idle_leds(robot)
