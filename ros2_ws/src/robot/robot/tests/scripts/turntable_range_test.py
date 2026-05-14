@@ -22,19 +22,20 @@ from robot.robot import FirmwareState, Robot
 from _manipulator_config import (
     TURNTABLE_ACCELERATION,
     TURNTABLE_MAX_VELOCITY,
-    TURNTABLE_SAFE_ARC_DEG,
+    TURNTABLE_MIN_DEG,
+    TURNTABLE_SCAN_ARC_DEG,
     TURNTABLE_STEPPER,
     turntable_deg_to_steps,
 )
 
-SWEEP_DEG      = 90.0   # degrees to sweep each direction; keep ≤ TURNTABLE_SAFE_ARC_DEG / 2
+SWEEP_DEG      = 90.0   # degrees to sweep each direction; keep ≤ TURNTABLE_SCAN_ARC_DEG
 MOVE_TIMEOUT_S = 15.0
 
 
 def run(robot: Robot) -> None:
     print(f"[TEST] turntable_range_test  stepper={TURNTABLE_STEPPER.name}")
     print(f"[TEST] sweep ±{SWEEP_DEG}°  ({turntable_deg_to_steps(SWEEP_DEG)} steps each direction)")
-    print(f"[TEST] Safe arc limit: ±{TURNTABLE_SAFE_ARC_DEG / 2}°  — do not change SWEEP_DEG beyond this.")
+    print(f"[TEST] Safe scan zone: ±{TURNTABLE_SCAN_ARC_DEG:.0f}°  min limit: {TURNTABLE_MIN_DEG:.0f}°  — do not change SWEEP_DEG beyond TURNTABLE_SCAN_ARC_DEG.")
 
     robot.set_state(FirmwareState.RUNNING)
     robot.step_set_config(TURNTABLE_STEPPER, max_velocity=TURNTABLE_MAX_VELOCITY, acceleration=TURNTABLE_ACCELERATION)

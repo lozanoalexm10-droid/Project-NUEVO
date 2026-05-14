@@ -21,14 +21,13 @@ from robot.hardware_map import (
     POSITION_UNIT,
     RIGHT_WHEEL_DIR_INVERTED,
     RIGHT_WHEEL_MOTOR,
+    TAG_ID,
+    VELOCITY_KD,
+    VELOCITY_KI,
+    VELOCITY_KP,
     WHEEL_BASE,
     WHEEL_DIAMETER,
-    TAG_ID,
 )
-
-VELOCITY_KP = 2.28
-VELOCITY_KI = 4.45
-VELOCITY_KD = 0.0
 
 from robot.robot import FirmwareState, Robot
 from robot.util import densify_polyline
@@ -43,20 +42,6 @@ def configure_robot(robot: Robot) -> None:
         left_motor_dir_inverted=LEFT_WHEEL_DIR_INVERTED,
         right_motor_id=RIGHT_WHEEL_MOTOR,
         right_motor_dir_inverted=RIGHT_WHEEL_DIR_INVERTED,
-    )
-    robot.set_pid_gains(
-        motor_id=LEFT_WHEEL_MOTOR,
-        loop_type=DCPidLoop.VELOCITY,
-        kp=VELOCITY_KP,
-        ki=VELOCITY_KI,
-        kd=VELOCITY_KD,
-    )
-    robot.set_pid_gains(
-        motor_id=RIGHT_WHEEL_MOTOR,
-        loop_type=DCPidLoop.VELOCITY,
-        kp=VELOCITY_KP,
-        ki=VELOCITY_KI,
-        kd=VELOCITY_KD,
     )
     robot.enable_lidar()
     robot.enable_gps()
@@ -77,7 +62,27 @@ def show_moving_leds(robot: Robot) -> None:
 
 
 def start_robot(robot: Robot) -> None:
+    current = robot.get_state()
+    if current in (FirmwareState.ESTOP, FirmwareState.ERROR):
+        robot.reset_estop()
     robot.set_state(FirmwareState.RUNNING)
+
+    robot.set_pid_gains(
+        motor_id=LEFT_WHEEL_MOTOR,
+        loop_type=DCPidLoop.VELOCITY,
+        kp=VELOCITY_KP,
+        ki=VELOCITY_KI,
+        kd=VELOCITY_KD,
+    )
+    robot.set_pid_gains(
+        motor_id=RIGHT_WHEEL_MOTOR,
+        loop_type=DCPidLoop.VELOCITY,
+        kp=VELOCITY_KP,
+        ki=VELOCITY_KI,
+        kd=VELOCITY_KD,
+    )
+    time.sleep(0.2)
+
     robot.reset_odometry()
     robot.wait_for_pose_update(timeout=0.2)
 
