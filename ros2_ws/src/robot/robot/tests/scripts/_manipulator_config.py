@@ -14,7 +14,17 @@ MICROSTEP               = 16                # confirm against firmware StepConfi
 PULLEY_RATIO            = 4.0               # GT2 belt: 4 motor revs per 1 turntable rev
 TURNTABLE_MAX_VELOCITY  = 2000              # steps/sec at motor shaft
 TURNTABLE_ACCELERATION  = 1000             # steps/sec² at motor shaft
-TURNTABLE_SAFE_ARC_DEG  = 180.0            # usable sweep (front half-circle)
+# Angle convention (CCW positive, looking down from above):
+#   -90° = robot's right side   (max CW — cable hard limit)
+#     0° = forward
+#   +90° = robot's left side
+#  +180° = straight backward = stow position (max CCW — cable hard limit)
+# Step counts increase with angle, so ABSOLUTE moves naturally spin CW when
+# leaving stow (step count decreases) and CCW when returning to stow (increases).
+# Never command outside [TURNTABLE_MIN_DEG, TURNTABLE_MAX_DEG].
+TURNTABLE_MIN_DEG       = -90.0            # rightmost allowed position (CW hard limit)
+TURNTABLE_MAX_DEG       = 180.0            # rearmost allowed position — also stow (CCW hard limit)
+TURNTABLE_SCAN_ARC_DEG  = 90.0            # half-width of front scanning zone (targets within ±90°)
 
 # Derived — do not edit
 STEPS_PER_TURNTABLE_DEG = (MOTOR_STEPS_PER_REV * MICROSTEP * PULLEY_RATIO) / 360.0
@@ -48,6 +58,29 @@ GRIPPER_ROAST_DEG    = 50.0                 # slightly open during roasting
 HEATING_WIRE_MOTOR_ID = 3                   # Motor.DC_M3
 HEATING_WIRE_PWM_ON   = 64                  # −255 to 255 scale — start very low, increase only after verifying temp
 HEATING_WIRE_PWM_OFF  = 0
+
+# ── Camera pan stepper (Stepper 2) ────────────────────────────────────────────
+# Pans the camera to cover the full ±90° scan zone in three overlapping frames.
+# With CAMERA_HFOV_DEG = 102° and positions spaced 60° apart, adjacent frames
+# share a 42° overlap region so no marshmallow falls through the cracks.
+CAMPAN_STEPPER          = Stepper.STEPPER_2
+CAMPAN_STEPS_PER_REV    = 200              # native steps (1.8°/step)
+CAMPAN_MICROSTEP        = 16              # TODO: confirm against firmware StepConfig
+CAMPAN_PULLEY_RATIO     = 1.0            # TODO: confirm belt/gear ratio — 1.0 = direct drive
+CAMPAN_MAX_VELOCITY     = 500            # steps/sec
+CAMPAN_ACCELERATION     = 300            # steps/sec²
+CAMPAN_POSITIONS_DEG    = [-60.0, 0.0, 60.0]   # left → center → right (CCW negative = left)
+CAMPAN_SETTLE_S         = 0.3            # seconds to wait after panning before capturing
+
+STEPS_PER_CAMPAN_DEG = (CAMPAN_STEPS_PER_REV * CAMPAN_MICROSTEP * CAMPAN_PULLEY_RATIO) / 360.0
+
+def campan_deg_to_steps(degrees: float) -> int:
+    return round(degrees * STEPS_PER_CAMPAN_DEG)
+
+# ── Ultrasonic sensor ──────────────────────────────────────────────────────────
+# Mounted on the forearm. Measure from the physical robot and replace these values.
+ULTRASONIC_FOREARM_OFFSET_MM = 50.0    # TODO: distance from elbow pivot to sensor along forearm
+ULTRASONIC_HEIGHT_OFFSET_MM  = 0.0    # TODO: sensor height above forearm centerline (+ = above)
 
 # ── Arm geometry (measure from physical robot, all in mm) ─────────────────────
 # TODO: replace placeholder values with physical measurements before using IK.
