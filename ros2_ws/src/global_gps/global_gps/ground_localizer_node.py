@@ -43,7 +43,9 @@ import json
 import os
 import socket
 import threading
+import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 import cv2
 import yaml
@@ -91,6 +93,8 @@ class GroundLocalizer(Node):
         self.declare_parameter("corner_ids", [0, 1, 2, 3])
         self.declare_parameter("rover_ids", [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
         self.declare_parameter("tcp_port", 7777)
+        self.declare_parameter("camera_stream_port", 7778)
+        self.declare_parameter("camera_stream_fps", 5.0)
         self.declare_parameter("calibration_layout_file", "")
         self.declare_parameter(
             "transform_cache_file",
@@ -102,6 +106,8 @@ class GroundLocalizer(Node):
         self._corner_ids: list[int] = list(self.get_parameter("corner_ids").value)
         self._rover_ids: list[int] = list(self.get_parameter("rover_ids").value)
         self._tcp_port: int = int(self.get_parameter("tcp_port").value)
+        self._camera_stream_port: int = int(self.get_parameter("camera_stream_port").value)
+        self._camera_stream_fps: float = float(self.get_parameter("camera_stream_fps").value)
         self._calibration_layout_file: str = str(
             self.get_parameter("calibration_layout_file").value
         )
@@ -142,6 +148,12 @@ class GroundLocalizer(Node):
         self._using_cached_transform: bool = False
         self._cache_warning_emitted: bool = False
         self._startup_cache_timer = None
+
+        # ── MJPEG preview stream ───────────────────────────────────────────
+        self._stream_lock = threading.Lock()
+        self._latest_frame_jpg: bytes | None = None
+        self._last_stream_ts: float = 0.0
+        self._start_mjpeg_server()
 
         # ── TCP push server (NAT-friendly: robots connect to us) ──────────
         # Robots on WiFi cannot be reached from the wired Jetson because the
@@ -224,11 +236,13 @@ class GroundLocalizer(Node):
             )
 
         if ids is None:
+            self._maybe_update_stream_frame(gray, [], [])
             if self._calibrated:
                 self._publish_detections(rgb_msg, {})
             return
 
         ids = ids.flatten().tolist()
+        self._maybe_update_stream_frame(gray, corners, ids)
         marker_poses = self._estimate_poses(corners, ids)
 
         seen = [m for m in self._corner_ids if m in marker_poses]
@@ -709,6 +723,83 @@ class GroundLocalizer(Node):
         theta = float(np.arctan2(marker_x_world[1], marker_x_world[0]))
         return float(p_world[0]), float(p_world[1]), theta
 
+
+    # ── MJPEG preview server ──────────────────────────────────────────────
+
+    def _start_mjpeg_server(self) -> None:
+        node = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/stream":
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "multipart/x-mixed-replace; boundary=frame",
+                )
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                try:
+                    while True:
+                        with node._stream_lock:
+                            jpg = node._latest_frame_jpg
+                        if jpg is None:
+                            time.sleep(0.05)
+                            continue
+                        self.wfile.write(
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n"
+                            + jpg
+                            + b"\r\n"
+                        )
+                        self.wfile.flush()
+                        time.sleep(1.0 / node._camera_stream_fps)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+            def log_message(self, *_args) -> None:
+                pass  # suppress per-request log noise
+
+        srv = ThreadingHTTPServer(("0.0.0.0", self._camera_stream_port), _Handler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        self.get_logger().info(
+            f"MJPEG preview stream at http://0.0.0.0:{self._camera_stream_port}/stream"
+            f" ({self._camera_stream_fps:.0f} FPS)"
+        )
+
+    def _maybe_update_stream_frame(
+        self, gray: np.ndarray, corners: list, ids: list[int]
+    ) -> None:
+        """Throttle-encode and store the latest annotated preview frame."""
+        now = time.monotonic()
+        if now - self._last_stream_ts < 1.0 / self._camera_stream_fps:
+            return
+        self._last_stream_ts = now
+
+        bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        if ids and corners:
+            cv2.aruco.drawDetectedMarkers(bgr, corners)
+            for corner, mid in zip(corners, ids):
+                cx = int(corner[0][:, 0].mean())
+                cy = int(corner[0][:, 1].mean())
+                cv2.putText(
+                    bgr,
+                    str(mid),
+                    (cx + 5, cy - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
+
+        ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 50])
+        if ok:
+            with self._stream_lock:
+                self._latest_frame_jpg = buf.tobytes()
 
     # ── TCP server ────────────────────────────────────────────────────────
 
