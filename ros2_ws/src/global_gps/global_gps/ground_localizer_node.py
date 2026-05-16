@@ -760,6 +760,26 @@ class GroundLocalizer(Node):
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
 
+            def do_POST(self) -> None:
+                if self.path != "/recalibrate":
+                    self.send_error(404)
+                    return
+                node._calibrated = False
+                node._using_cached_transform = False
+                node.get_logger().info("Recalibration triggered via HTTP.")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+
+            def do_OPTIONS(self) -> None:
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
+
             def log_message(self, *_args) -> None:
                 pass  # suppress per-request log noise
 
