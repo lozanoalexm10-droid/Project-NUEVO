@@ -43,6 +43,7 @@ import json
 import os
 import socket
 import threading
+from datetime import datetime, timezone
 import numpy as np
 import cv2
 import yaml
@@ -91,6 +92,11 @@ class GroundLocalizer(Node):
         self.declare_parameter("rover_ids", [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
         self.declare_parameter("tcp_port", 7777)
         self.declare_parameter("calibration_layout_file", "")
+        self.declare_parameter(
+            "transform_cache_file",
+            "/runtime_output/global_gps/transform_cache.yaml",
+        )
+        self.declare_parameter("startup_cache_timeout_sec", 30.0)
 
         self._marker_size: float = float(self.get_parameter("marker_size").value)
         self._corner_ids: list[int] = list(self.get_parameter("corner_ids").value)
@@ -98,6 +104,12 @@ class GroundLocalizer(Node):
         self._tcp_port: int = int(self.get_parameter("tcp_port").value)
         self._calibration_layout_file: str = str(
             self.get_parameter("calibration_layout_file").value
+        )
+        self._transform_cache_file: str = str(
+            self.get_parameter("transform_cache_file").value
+        )
+        self._startup_cache_timeout_sec: float = float(
+            self.get_parameter("startup_cache_timeout_sec").value
         )
 
         # Load and validate the world-frame calibration-tag layout.
@@ -127,6 +139,9 @@ class GroundLocalizer(Node):
         self._ground_plane: dict | None = None    # {"normal": ..., "d": ...}
         self._T_world_from_cam: np.ndarray | None = None
         self._calibrated: bool = False
+        self._using_cached_transform: bool = False
+        self._cache_warning_emitted: bool = False
+        self._startup_cache_timer = None
 
         # ── TCP push server (NAT-friendly: robots connect to us) ──────────
         # Robots on WiFi cannot be reached from the wired Jetson because the
@@ -172,8 +187,16 @@ class GroundLocalizer(Node):
             f"Ground localizer started | "
             f"marker_size={self._marker_size:.3f} m | "
             f"corner_ids={self._corner_ids} | "
-            f"rover_ids={self._rover_ids}"
+            f"rover_ids={self._rover_ids} | "
+            f"transform_cache_file={self._transform_cache_file} | "
+            f"startup_cache_timeout_sec={self._startup_cache_timeout_sec:.1f}"
         )
+
+        if self._startup_cache_timeout_sec > 0.0:
+            self._startup_cache_timer = self.create_timer(
+                self._startup_cache_timeout_sec,
+                self._on_startup_cache_timeout,
+            )
 
     # ── Camera info ───────────────────────────────────────────────────────
 
@@ -208,9 +231,10 @@ class GroundLocalizer(Node):
         ids = ids.flatten().tolist()
         marker_poses = self._estimate_poses(corners, ids)
 
-        if not self._calibrated:
-            seen = [m for m in self._corner_ids if m in marker_poses]
-            missing = [m for m in self._corner_ids if m not in marker_poses]
+        seen = [m for m in self._corner_ids if m in marker_poses]
+        missing = [m for m in self._corner_ids if m not in marker_poses]
+
+        if not self._calibrated or self._using_cached_transform:
             # Rigid 3D alignment needs >= 3 non-collinear correspondences.
             if len(seen) >= 3:
                 if missing:
@@ -218,13 +242,20 @@ class GroundLocalizer(Node):
                         f"Calibrating with {len(seen)}/{len(self._corner_ids)} "
                         f"corners; missing {missing}. Result may be less accurate."
                     )
-                self._calibrate(marker_poses, seen)
-            else:
+                source = (
+                    "live markers after cached startup"
+                    if self._using_cached_transform
+                    else "live markers"
+                )
+                self._calibrate(marker_poses, seen, source=source)
+            elif not self._calibrated:
                 self.get_logger().warn(
                     f"Waiting for calibration — need >=3 corners, "
                     f"have {len(seen)} (missing {missing}).",
                     throttle_duration_sec=5.0,
                 )
+
+        if not self._calibrated:
             return
 
         self._publish_detections(rgb_msg, marker_poses)
@@ -401,14 +432,20 @@ class GroundLocalizer(Node):
         )
         return P_world
 
-    def _calibrate(self, marker_poses: dict[int, dict], seen_ids: list[int]) -> None:
+    def _calibrate(
+        self,
+        marker_poses: dict[int, dict],
+        seen_ids: list[int],
+        source: str = "live markers",
+    ) -> None:
         """SVD-align measured tag tvecs to the known world layout.
 
         ``seen_ids`` is the subset of ``self._corner_ids`` currently detected
         (length >= 3). Only those rows of ``self._P_world`` are used.
         """
         self.get_logger().info(
-            f"Calibrating world frame via SVD using {len(seen_ids)} corners: {seen_ids}"
+            f"Calibrating world frame via SVD using {len(seen_ids)} corners: "
+            f"{seen_ids} ({source})"
         )
 
         # Pick the matching rows of P_world (preserving corner_ids order).
@@ -456,10 +493,131 @@ class GroundLocalizer(Node):
         )
 
         self._calibrated = True
+        self._using_cached_transform = False
+        self._cache_warning_emitted = False
+        self._save_cached_transform()
+        self._cancel_startup_cache_timer()
         self.get_logger().info(
             f"Calibration complete ({len(seen_ids)} corners). "
             f"Residuals max={max_mm:.1f}mm rms={rms_mm:.1f}mm per-tag=[{per_tag}]"
         )
+
+    def _on_startup_cache_timeout(self) -> None:
+        """Load the cached transform after the startup timeout, if needed."""
+        self._cancel_startup_cache_timer()
+        if self._calibrated:
+            return
+        if not self._load_cached_transform():
+            self.get_logger().warn(
+                "Startup calibration timeout expired and no valid cached "
+                "transformation is available. Continuing to wait for live markers."
+            )
+            return
+        self._calibrated = True
+        self._using_cached_transform = True
+        if not self._cache_warning_emitted:
+            self.get_logger().warn(
+                "Cannot detect the current localization markers after "
+                f"{self._startup_cache_timeout_sec:.1f}s. Using cached transformation "
+                f"from {self._transform_cache_file}."
+            )
+            self._cache_warning_emitted = True
+
+    def _cancel_startup_cache_timer(self) -> None:
+        if self._startup_cache_timer is None:
+            return
+        self._startup_cache_timer.cancel()
+        self.destroy_timer(self._startup_cache_timer)
+        self._startup_cache_timer = None
+
+    def _save_cached_transform(self) -> None:
+        """Persist the latest successful calibration to disk."""
+        if self._T_world_from_cam is None or self._ground_plane is None:
+            return
+        try:
+            cache_dir = os.path.dirname(self._transform_cache_file)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+
+            payload = {
+                "version": 1,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "marker_size": self._marker_size,
+                "corner_ids": self._corner_ids,
+                "transform_world_from_cam": self._T_world_from_cam.tolist(),
+                "ground_plane": {
+                    "normal": self._ground_plane["normal"].tolist(),
+                    "d": float(self._ground_plane["d"]),
+                },
+            }
+
+            with open(self._transform_cache_file, "w", encoding="utf-8") as f:
+                yaml.safe_dump(payload, f, sort_keys=False)
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Failed to save cached transformation to "
+                f"{self._transform_cache_file}: {exc}"
+            )
+
+    def _load_cached_transform(self) -> bool:
+        """Load a cached calibration transform from disk."""
+        path = self._transform_cache_file
+        if not path or not os.path.isfile(path):
+            return False
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = yaml.safe_load(f) or {}
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Failed to read cached transformation {path}: {exc}"
+            )
+            return False
+
+        try:
+            cached_corner_ids = [int(x) for x in doc["corner_ids"]]
+            cached_marker_size = float(doc["marker_size"])
+            T_world_from_cam = np.array(
+                doc["transform_world_from_cam"],
+                dtype=np.float64,
+            )
+            gp_doc = doc["ground_plane"]
+            gp_normal = np.array(gp_doc["normal"], dtype=np.float64)
+            gp_d = float(gp_doc["d"])
+        except (KeyError, TypeError, ValueError) as exc:
+            self.get_logger().warn(
+                f"Cached transformation {path} is malformed: {exc}"
+            )
+            return False
+
+        if cached_corner_ids != self._corner_ids:
+            self.get_logger().warn(
+                f"Cached transformation corner_ids {cached_corner_ids} do not match "
+                f"current corner_ids {self._corner_ids}; ignoring cache."
+            )
+            return False
+        if abs(cached_marker_size - self._marker_size) > 1e-9:
+            self.get_logger().warn(
+                f"Cached transformation marker_size {cached_marker_size:.6f} does not "
+                f"match current marker_size {self._marker_size:.6f}; ignoring cache."
+            )
+            return False
+        if T_world_from_cam.shape != (4, 4):
+            self.get_logger().warn(
+                f"Cached transformation matrix has shape {T_world_from_cam.shape}, "
+                "expected (4, 4); ignoring cache."
+            )
+            return False
+        if gp_normal.shape != (3,):
+            self.get_logger().warn(
+                f"Cached ground-plane normal has shape {gp_normal.shape}, "
+                "expected (3,); ignoring cache."
+            )
+            return False
+
+        self._T_world_from_cam = T_world_from_cam
+        self._ground_plane = {"normal": gp_normal, "d": gp_d}
+        return True
 
     # ── Detection publishing ──────────────────────────────────────────────
 

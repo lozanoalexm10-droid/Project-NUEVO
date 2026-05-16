@@ -1,0 +1,17 @@
+[Unit]
+Description=Global GPS Docker stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jimmy/Documents/Project-NUEVO
+Environment=COMPOSE_FILE=/home/jimmy/Documents/Project-NUEVO/ros2_ws/docker/docker-compose.jetson.yml
+ExecStart=/home/jimmy/Documents/Project-NUEVO/ros2_ws/src/global_gps/scripts/start_global_gps_stack.sh
+ExecStop=/usr/bin/docker compose -f /home/jimmy/Documents/Project-NUEVO/ros2_ws/docker/docker-compose.jetson.yml stop global_gps
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -88,6 +88,8 @@ def _build_nodes(context, *args, **kwargs):
             "rover_ids": LaunchConfiguration("rover_ids"),
             "tcp_port": LaunchConfiguration("tcp_port"),
             "calibration_layout_file": LaunchConfiguration("calibration_layout_file"),
+            "transform_cache_file": LaunchConfiguration("transform_cache_file"),
+            "startup_cache_timeout_sec": LaunchConfiguration("startup_cache_timeout_sec"),
         }],
         remappings=cfg["remappings"],
     )
@@ -134,6 +136,22 @@ def generate_launch_description() -> LaunchDescription:
                 "Which camera stream to feed the localizer. "
                 "'color' = RGB (69°×42° FOV); "
                 "'infra1' = left IR camera (87°×58° FOV, wider, IR emitter off)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "transform_cache_file",
+            default_value="/runtime_output/global_gps/transform_cache.yaml",
+            description=(
+                "Writable YAML file used to cache the most recent successful "
+                "world-from-camera transformation."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "startup_cache_timeout_sec",
+            default_value="30.0",
+            description=(
+                "Seconds to wait for live calibration markers on startup before "
+                "falling back to the cached transformation."
             ),
         ),
         OpaqueFunction(function=_build_nodes),

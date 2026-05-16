@@ -15,7 +15,10 @@ publish 2-D world-frame positions for all rover robots simultaneously.
    reflection guard). The ground plane in camera frame is derived
    analytically as the image of the world `z = 0` plane. Calibration is
    automatic — just make sure the camera can see all four corners when the
-   node starts.
+   node starts. The most recent successful transform is cached to
+   `/runtime_output/global_gps/transform_cache.yaml` by default; if startup
+   cannot find enough localization markers within 30 seconds, the node logs a
+   warning and falls back to that cached transform.
 
 2. **Tracking**: Once calibrated, the node detects any rover markers (IDs 11–18
    by default) in every frame and publishes their 2-D poses (x, y, theta) on
@@ -184,6 +187,36 @@ ros2 launch global_gps global_gps.launch.py \
     marker_size:=0.15 \
     corner_ids:=[0,1,2,3] \
     rover_ids:=[11,12,13]
+```
+
+The cache fallback can be configured explicitly:
+
+```bash
+ros2 launch global_gps global_gps.launch.py \
+    transform_cache_file:=/runtime_output/global_gps/transform_cache.yaml \
+    startup_cache_timeout_sec:=30.0
+```
+
+### Boot-time startup service
+
+This package now includes host-side startup assets:
+
+- `scripts/start_global_gps_stack.sh`
+- `systemd/global-gps-stack.service`
+
+The service template does the two required startup actions:
+
+1. `docker compose ... up -d --wait global_gps`
+2. `ros2 launch global_gps global_gps.launch.py`
+
+Because enabling `systemd` on the Jetson modifies host state outside
+`src/global_gps`, installation is still a manual host step. Copy or symlink
+the packaged `systemd/global-gps-stack.service` into `/etc/systemd/system/`,
+adjust `WorkingDirectory` if the repo lives elsewhere, then run:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now global-gps-stack.service
 ```
 
 ### Capture a photo of the camera's field of view

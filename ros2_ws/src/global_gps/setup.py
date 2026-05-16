@@ -11,5 +11,7 @@ setup(
         (os.path.join("share", package_name), ["package.xml"]),
         (os.path.join("share", package_name, "launch"), ["launch/global_gps.launch.py"]),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
+        (os.path.join("share", package_name, "scripts"), glob("scripts/*.sh")),
+        (os.path.join("share", package_name, "systemd"), glob("systemd/*.service")),
     ],
 )
