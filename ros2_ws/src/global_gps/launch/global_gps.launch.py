@@ -20,9 +20,19 @@ from ament_index_python.packages import get_package_share_directory
 
 
 # image_source -> realsense flags + topic remappings + camera profile.
-# Color  : 1280x720 RGB, 69° × 42° FOV. Default.
-# Infra1 : 1280x720 mono IR, 87° × 58° FOV (wider). IR projector is disabled
-#          so its dot pattern doesn't confuse ArUco.
+#
+# Color  : RGB, 69° × 42° FOV.
+#   USB 2: max reliable profile is 1280x720x15.
+#   USB 3: 1920x1080x30 (higher resolution, same FOV).
+#
+# Infra1 : mono IR, 87° × 58° FOV (wider than color). IR projector disabled
+#   so its dot pattern doesn't confuse ArUco.
+#   USB 2: widest usable 16:9 mode is 848x480x10.
+#   USB 3: 1280x720x30 (full sensor resolution, full FOV, 3× frame rate).
+#
+# Use infra1 for maximum FOV; use color for a visible-light preview.
+# Profiles are set for USB 3. On USB 2 the driver will reject unsupported
+# modes — drop to 1280x720x15 (color) or 848x480x10 (infra1) if needed.
 _IMAGE_SOURCE_CONFIGS = {
     "color": {
         "rs_args": {
@@ -31,7 +41,7 @@ _IMAGE_SOURCE_CONFIGS = {
             "enable_infra1": "false",
             "enable_infra2": "false",
             "align_depth.enable": "false",
-            "rgb_camera.color_profile": "1280x720x15",
+            "rgb_camera.color_profile": "1920x1080x30",
         },
         "remappings": [
             ("image_raw", "/camera/camera/color/image_raw"),
@@ -46,12 +56,7 @@ _IMAGE_SOURCE_CONFIGS = {
             "enable_infra2": "false",
             "align_depth.enable": "false",
             "depth_module.emitter_enabled": "0",
-            # IR shares the depth_module.depth_profile setting (same sensor).
-            # Camera-advertised profiles depend on USB speed; query with:
-            #   ros2 param describe /camera/camera depth_module.depth_profile
-            # On USB 2.1 the widest 16:9 mode at usable framerate is 848x480x10
-            # (full horizontal FOV ~87°). Move to USB 3 to unlock higher rates.
-            "depth_module.depth_profile": "848x480x10",
+            "depth_module.depth_profile": "1280x720x30",
         },
         "remappings": [
             ("image_raw", "/camera/camera/infra1/image_rect_raw"),
