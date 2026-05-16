@@ -12,6 +12,8 @@ import { SensorSection } from './components/SensorSection';
 import { WorldCanvas } from './components/WorldCanvas';
 import { GpsStatusCard } from './components/GpsStatusCard';
 import { RosNodesCard } from './components/RosNodesCard';
+import { CameraWidget } from './components/CameraWidget';
+import { TagsPanel } from './components/TagsPanel';
 import { LoginPage } from './components/LoginPage';
 import { UserManagementModal } from './components/UserManagementModal';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -208,8 +210,10 @@ function Dashboard() {
             <div className="grid grid-cols-1 md:grid-cols-8 gap-4">
               <div className="md:col-span-2 space-y-3">
                 <h3 className="text-sm font-semibold text-white/60 uppercase tracking-wider">RPi Sensors</h3>
+                <CameraWidget />
                 <WorldCanvas />
                 <GpsStatusCard />
+                <TagsPanel />
                 <RosNodesCard />
               </div>
               <div className="md:col-span-2 space-y-3">
