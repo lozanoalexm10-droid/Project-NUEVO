@@ -85,8 +85,8 @@ def start_robot(robot: Robot) -> None:
 
 FULL_PATH = [
     (0.0, 0.0),
-    (0.0, 3110.0),
-    (610.0, 3110.0),
+    (0.0, 1200.0),  # Switch y back to 3100.0
+    (610.0, 1200.0),# Swittch y back to 3100.0
     (610.0, 610.0),
     (1565.0, 610.0),
     (1565.0, 3110.0),
@@ -132,7 +132,7 @@ def run(robot: Robot) -> None:
             robot.purepursuit_follow_path(
                 waypoints=path,
                 velocity=130.0,
-                lookahead=250.0,
+                lookahead=100.0,
                 tolerance=20.0,
                 max_angular_rad_s=0.7,
                 advance_radius=80.0,
