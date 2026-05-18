@@ -15,13 +15,7 @@ From the repository root (`Project-NUEVO/`):
 
 ```bash
 docker compose -f ros2_ws/docker/docker-compose.rpi.yml build
-```
-
-```bash
 docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d
-```
-
-```bash
 docker compose -f ros2_ws/docker/docker-compose.rpi.yml logs -f ros2_runtime
 ```
 
@@ -44,9 +38,6 @@ docker compose -f ros2_ws/docker/docker-compose.rpi.yml exec ros2_runtime bash
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-```
-
-```bash
 source /ros2_ws/install/setup.bash
 ```
 
