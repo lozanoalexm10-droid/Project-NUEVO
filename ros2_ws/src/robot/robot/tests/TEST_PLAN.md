@@ -95,9 +95,9 @@ ros2 run vision vision
 |---|---|---|---|---|
 | Turntable        | Stepper | STEPPER_1     | `TURNTABLE_STEPPER`      | Confirmed           |
 | Camera pan       | Stepper | STEPPER_2     | `CAMPAN_STEPPER`         | Confirm microstep against firmware |
-| Shoulder         | Servo   | CH_1 (TBC)    | `SHOULDER_CHANNEL`       | Needs wiring check  |
-| Elbow            | Servo   | CH_2 (TBC)    | `ELBOW_CHANNEL`          | Needs wiring check  |
-| Gripper          | Servo   | CH_3          | `GRIPPER_CHANNEL`        | Confirmed           |
+| Shoulder         | Servo   | CH_16         | `SHOULDER_CHANNEL`       | Confirmed           |
+| Elbow            | Servo   | CH_15         | `ELBOW_CHANNEL`          | Confirmed           |
+| Gripper          | Servo   | CH_14         | `GRIPPER_CHANNEL`        | Confirmed           |
 | Heating wire     | DC PWM  | DC_M3 (TBC)   | `HEATING_WIRE_MOTOR_ID`  | Confirm with firmware |
 
 Turntable angle convention: -90° = robot right (CW limit), 0° = forward, +180° = stow (CCW limit).
@@ -270,7 +270,7 @@ For all servo and stepper tests the script is run directly — no main.py edit n
 | Nodes  | bridge (auto) + robot |
 | Status | Ready |
 
-Sweeps CH_1 and CH_2 through 0° → 90° → 180° → 90°. Raw sanity check before named joint tests.
+Sweeps CH_16 (shoulder), CH_15 (elbow), CH_14 (gripper) — centers each to 90° in Phase 1, then sweeps in Phase 2. Raw sanity check before named joint tests.
 
 **Pass:** Both channels reach all waypoints. No grinding or binding.
 
@@ -310,7 +310,7 @@ Script holds shoulder at stow before sweeping elbow. **Do not run with elbow ext
 |---|---|
 | Script | `gripper_open_close_test.py` |
 | Nodes  | bridge (auto) + robot |
-| Status | Ready — CH_3 confirmed |
+| Status | Ready — CH_14 confirmed |
 
 Cycles gripper open/close 3× with incremental 5°/step moves to avoid stall.
 If the jaw barely moves, increase the gap between `GRIPPER_OPEN_DEG` and `GRIPPER_CLOSE_DEG` in `_manipulator_config.py` by 10° at a time.

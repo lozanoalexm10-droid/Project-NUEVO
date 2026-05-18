@@ -33,24 +33,25 @@ def turntable_deg_to_steps(degrees: float) -> int:
     return round(degrees * STEPS_PER_TURNTABLE_DEG)
 
 # ── Shoulder ──────────────────────────────────────────────────────────────────
-SHOULDER_CHANNEL     = ServoChannel.CH_1    # TODO: confirm wiring
+SHOULDER_CHANNEL     = ServoChannel.CH_16
 SHOULDER_STOW_DEG    = 90.0                 # safe resting position
 SHOULDER_UP_DEG      = 60.0                 # raised for reach
 SHOULDER_SAFE_MIN    = 30.0                 # hard mechanical limit — do not exceed
 SHOULDER_SAFE_MAX    = 150.0
 
 # ── Elbow ─────────────────────────────────────────────────────────────────────
-ELBOW_CHANNEL        = ServoChannel.CH_2    # TODO: confirm wiring
+ELBOW_CHANNEL        = ServoChannel.CH_15
 ELBOW_STOW_DEG       = 90.0                 # folded/retracted
 ELBOW_EXTEND_DEG     = 45.0                 # extended toward target
 ELBOW_SAFE_MIN       = 20.0
 ELBOW_SAFE_MAX       = 160.0
 
 # ── Gripper ───────────────────────────────────────────────────────────────────
-GRIPPER_CHANNEL      = ServoChannel.CH_3
-GRIPPER_OPEN_DEG     = 30.0
-GRIPPER_CLOSE_DEG    = 110.0
-GRIPPER_ROAST_DEG    = 50.0                 # slightly open during roasting
+GRIPPER_CHANNEL      = ServoChannel.CH_14
+GRIPPER_OPEN_DEG     = 0.0                  # fully open — approach position before grab
+GRIPPER_GRAB_DEG     = 45.0                 # hold position for marshmallow
+GRIPPER_CLOSE_DEG    = 120.0                # fully closed hard stop
+GRIPPER_ROAST_DEG    = 60.0                 # slightly open during roasting
 
 # ── Heating wire ──────────────────────────────────────────────────────────────
 # TODO: confirm whether this is a DC motor channel in PWM mode or a GPIO relay.
@@ -96,8 +97,8 @@ ARM_SHOULDER_OFFSET_MM  = 20.0     # forward distance from turntable axis to sho
 # elbow_servo_sign:      +1 if higher servo angle opens the elbow
 SHOULDER_SERVO_OFFSET   = 90.0     # TODO: calibrate
 SHOULDER_SERVO_SIGN     = 1.0      # TODO: confirm direction
-ELBOW_SERVO_OFFSET      = 90.0     # TODO: calibrate
-ELBOW_SERVO_SIGN        = 1.0      # TODO: confirm direction
+ELBOW_SERVO_OFFSET      = 122.0    # servo angle when forearm is collinear with upper arm (fully straight)
+ELBOW_SERVO_SIGN        = -1.0     # lower angle = forearm up (opens), higher angle = forearm down (closes)
 
 # Assembled geometry object — import this in programs and tests that use IK.
 ARM_GEOMETRY = ArmGeometry(

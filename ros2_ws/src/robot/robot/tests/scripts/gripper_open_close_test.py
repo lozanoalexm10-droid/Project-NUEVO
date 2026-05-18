@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import time
 
-from robot.hardware_map import ServoChannel
 from robot.robot import FirmwareState, Robot
 
-GRIPPER_CHANNEL = ServoChannel.CH_3
+try:
+    from robot.tests.scripts._manipulator_config import GRIPPER_CHANNEL, GRIPPER_CLOSE_DEG, GRIPPER_OPEN_DEG
+except ImportError:
+    from _manipulator_config import GRIPPER_CHANNEL, GRIPPER_CLOSE_DEG, GRIPPER_OPEN_DEG
 
-# Adjust these two values if the gripper doesn't fully open or close.
-# Start conservative and widen only after confirming the mechanism is clear.
-# Reference: manipulation.py uses 15° open / 120° close on CH_1.
-OPEN_DEG = 30.0     # degrees — jaw open (smaller = more open for most linkages)
-CLOSE_DEG = 110.0   # degrees — jaw closed/gripping
+OPEN_DEG  = GRIPPER_OPEN_DEG
+CLOSE_DEG = GRIPPER_CLOSE_DEG
 
-NEUTRAL_DEG = (OPEN_DEG + CLOSE_DEG) / 2.0  # safe starting position
+NEUTRAL_DEG = (OPEN_DEG + CLOSE_DEG) / 2.0
 
 STEP_DEG = 5.0       # degrees per increment during slow approach
 STEP_DWELL_S = 0.08  # seconds between increments
@@ -37,7 +36,7 @@ def _move_to(robot: Robot, current: float, target: float) -> float:
 def run(robot: Robot) -> None:
     print(f"[TEST] gripper_open_close_test  channel={GRIPPER_CHANNEL.name}")
     print(f"[TEST] open={OPEN_DEG}°  close={CLOSE_DEG}°  cycles={CYCLES}")
-    print(f"[TEST] If gripper does not move, check OPEN_DEG/CLOSE_DEG and confirm CH_3 is wired.")
+    print(f"[TEST] If gripper does not move, check OPEN_DEG/CLOSE_DEG in _manipulator_config and confirm CH_14 is wired.")
 
     robot.set_state(FirmwareState.RUNNING)
     robot.enable_servo(GRIPPER_CHANNEL)
