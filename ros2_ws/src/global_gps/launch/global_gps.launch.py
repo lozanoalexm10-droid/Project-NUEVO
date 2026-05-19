@@ -135,7 +135,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "image_source",
-            default_value="infra1",
+            default_value="color",
             choices=list(_IMAGE_SOURCE_CONFIGS),
             description=(
                 "Which camera stream to feed the localizer. "
