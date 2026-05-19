@@ -94,7 +94,7 @@ ros2 run vision vision
 | Joint            | Type    | ID / Channel  | Config constant          | Status              |
 |---|---|---|---|---|
 | Turntable        | Stepper | STEPPER_1     | `TURNTABLE_STEPPER`      | Confirmed           |
-| Camera pan       | Stepper | STEPPER_2     | `CAMPAN_STEPPER`         | Confirm microstep against firmware |
+| Camera pan       | Stepper | STEPPER_2     | `CAMPAN_STEPPER`         | Confirmed — full step, direct drive |
 | Shoulder         | Servo   | CH_16         | `SHOULDER_CHANNEL`       | Confirmed           |
 | Elbow            | Servo   | CH_15         | `ELBOW_CHANNEL`          | Confirmed           |
 | Gripper          | Servo   | CH_14         | `GRIPPER_CHANNEL`        | Confirmed           |
@@ -375,7 +375,7 @@ Valid travel: -90° (right) → 0° (forward) → +180° (stow, also CCW limit).
 |---|---|
 | Script | `campan_range_test.py` |
 | Nodes  | bridge (auto) + robot |
-| Status | Ready — confirm `CAMPAN_MICROSTEP` and `CAMPAN_PULLEY_RATIO` in `_manipulator_config.py` first |
+| Status | Ready — confirmed: full step (no microstepping), direct drive, 2048 steps/rev |
 
 Sweeps camera pan stepper through all three scan positions (-60°, 0°, +60°) and returns to center.
 Verify camera cable has enough slack for full ±60° travel before running.

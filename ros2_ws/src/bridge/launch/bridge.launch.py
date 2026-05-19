@@ -9,5 +9,11 @@ def generate_launch_description():
             executable="bridge",
             name="bridge",
             output="screen",
-        )
+        ),
+        Node(
+            package="sensors",
+            executable="qwiic_ultrasonic",
+            name="qwiic_ultrasonic",
+            output="screen",
+        ),
     ])

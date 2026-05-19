@@ -110,13 +110,11 @@ def _detection_bearing_deg(det: dict, img_w: int) -> float:
 
 
 def _get_ultrasonic_mm(robot: Robot) -> float:
-    """Return ultrasonic range measurement in mm.
-
-    TODO: replace with the real robot API call once the ultrasonic node is wired up.
-    Placeholder returns a large value so ranging fails gracefully during development.
-    """
-    # return robot.get_ultrasonic_mm()   ← uncomment when the API exists
-    raise NotImplementedError("Ultrasonic API not yet implemented — wire up _get_ultrasonic_mm()")
+    """Return ultrasonic range measurement in mm, or raise RuntimeError if no reading."""
+    value = robot.get_ultrasonic_mm()
+    if value is None:
+        raise RuntimeError("No ultrasonic reading available — check sensor and enable_ultrasonic() call.")
+    return value
 
 
 def _restow(robot: Robot, shoulder_pos: float, elbow_pos: float, gripper_pos: float) -> None:
@@ -158,6 +156,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 robot.reset_estop()
             robot.set_state(FirmwareState.RUNNING)
             robot.enable_vision()
+            robot.enable_ultrasonic()
             state = "IDLE"
             state_entry_time = time.monotonic()
 

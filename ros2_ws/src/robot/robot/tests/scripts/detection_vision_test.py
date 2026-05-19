@@ -20,7 +20,7 @@ import time
 
 from robot.robot import FirmwareState, Robot
 
-from _manipulator_config import (
+from robot.tests.scripts._manipulator_config import (
     MARSHMALLOW_CLASS,
     MIN_CONFIDENCE,
     VISION_WAIT_S,

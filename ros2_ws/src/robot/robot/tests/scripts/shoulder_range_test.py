@@ -18,7 +18,7 @@ import time
 
 from robot.robot import FirmwareState, Robot
 
-from _manipulator_config import (
+from robot.tests.scripts._manipulator_config import (
     SHOULDER_CHANNEL,
     SHOULDER_SAFE_MAX,
     SHOULDER_SAFE_MIN,

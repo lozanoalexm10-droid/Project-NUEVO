@@ -31,6 +31,12 @@ def generate_launch_description():
             output="screen",
         ),
         Node(
+            package="sensors",
+            executable="qwiic_ultrasonic",
+            name="qwiic_ultrasonic",
+            output="screen",
+        ),
+        Node(
             package="rplidar_ros",
             executable="rplidar_c1_node",
             name="rplidar_node",

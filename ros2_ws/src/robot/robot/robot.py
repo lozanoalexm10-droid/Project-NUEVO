@@ -309,6 +309,10 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
         self._vision_image_size: tuple[int, int] = (0, 0)
         self._vision_last_time: float = 0.0
 
+        # ── Ultrasonic (RPi Qwiic, /ultrasonic_range) ─────────────────────────
+        self._ultrasonic_range_mm: float | None = None
+        self._ultrasonic_last_time: float = 0.0
+
         # ── Trajectory ────────────────────────────────────────────────────────
         self._odom_traj:  list[tuple[float, float]] = []
         self._fused_traj: list[tuple[float, float]] = []

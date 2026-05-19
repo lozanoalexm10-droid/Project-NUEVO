@@ -16,8 +16,6 @@ State machine:
     ↓ nav done                                                                │
   AT_STOP_SIGN          (red LED; after dwell: stop sign gone OR BTN_1 → go) │
     ↓                                                                         │
-  WAIT_ENCLOSURE        (ENCLOSURE_WAIT_S, team removes competition cover)    │
-    ↓                                                                         │
   ARM_HOME              (enable turntable + campan, move to search pose)      │
     ↓                                                         BTN_2 ─────────┘
   SCANNING              (3-frame camera pan, pick best hit)  (shutdown at any
@@ -88,7 +86,6 @@ from robot.tests.scripts._manipulator_config import (
     ELBOW_SAFE_MAX,
     ELBOW_SAFE_MIN,
     ELBOW_STOW_DEG,
-    ENCLOSURE_WAIT_S,
     GRIPPER_CHANNEL,
     GRIPPER_CLOSE_DEG,
     GRIPPER_OPEN_DEG,
@@ -167,6 +164,7 @@ def configure_robot(robot: Robot) -> None:
     robot.set_pid_gains(RIGHT_WHEEL_MOTOR, DCPidLoop.VELOCITY, VELOCITY_KP, VELOCITY_KI, VELOCITY_KD)
     robot.enable_lidar()
     robot.enable_gps()
+    robot.enable_ultrasonic()
     robot.set_tracked_tag_id(TAG_ID)
     robot.set_orientation_fusion_alpha(0.0)
     robot.set_position_fusion_alpha(0.10)
@@ -231,8 +229,11 @@ def _detection_bearing_deg(det: dict, img_w: int) -> float:
 
 
 def _get_ultrasonic_mm(robot: Robot) -> float:
-    # return robot.get_ultrasonic_mm()   ← uncomment when the API exists
-    raise NotImplementedError("Ultrasonic API not yet implemented — wire up _get_ultrasonic_mm()")
+    """Return ultrasonic range measurement in mm, or raise RuntimeError if no reading."""
+    value = robot.get_ultrasonic_mm()
+    if value is None:
+        raise RuntimeError("No ultrasonic reading available — check sensor and enable_ultrasonic() call.")
+    return value
 
 
 def _find_traffic_light_color(robot: Robot) -> str | None:
@@ -407,19 +408,11 @@ def run(robot: Robot) -> None:  # noqa: C901
                 sign_still_visible = bool(robot.get_detections("stop sign"))
                 if not sign_still_visible or robot.get_button(Button.BTN_1):
                     reason = "stop sign gone" if not sign_still_visible else "BTN_1 override"
-                    print(f"[FSM] Stop sign clear ({reason}) — waiting {ENCLOSURE_WAIT_S:.0f}s for enclosure removal.")
+                    print(f"[FSM] Stop sign clear ({reason}) — homing arm.")
                     robot.set_led(LED.RED, 0)
                     robot.set_led(LED.ORANGE, 255)
-                    state = "WAIT_ENCLOSURE"
+                    state = "ARM_HOME"
                     state_entry_time = time.monotonic()
-
-        # ── WAIT_ENCLOSURE ────────────────────────────────────────────────────
-        elif state == "WAIT_ENCLOSURE":
-            elapsed = time.monotonic() - state_entry_time
-            if elapsed >= ENCLOSURE_WAIT_S:
-                print("[FSM] Enclosure wait complete — homing arm.")
-                state = "ARM_HOME"
-                state_entry_time = time.monotonic()
 
         # ── ARM_HOME ──────────────────────────────────────────────────────────
         elif state == "ARM_HOME":

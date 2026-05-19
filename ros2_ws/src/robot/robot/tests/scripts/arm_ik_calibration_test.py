@@ -23,7 +23,7 @@ import time
 from robot.arm_kinematics import ArmGeometry, forward_kinematics, inverse_kinematics, OutOfReachError
 from robot.robot import FirmwareState, Robot
 
-from _manipulator_config import (
+from robot.tests.scripts._manipulator_config import (
     ARM_GEOMETRY,
     ELBOW_CHANNEL,
     SHOULDER_CHANNEL,

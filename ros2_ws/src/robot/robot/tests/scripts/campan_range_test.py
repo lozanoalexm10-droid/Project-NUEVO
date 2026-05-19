@@ -25,7 +25,7 @@ import time
 from robot.hardware_map import StepMoveType
 from robot.robot import FirmwareState, Robot
 
-from _manipulator_config import (
+from robot.tests.scripts._manipulator_config import (
     CAMPAN_ACCELERATION,
     CAMPAN_MAX_VELOCITY,
     CAMPAN_POSITIONS_DEG,

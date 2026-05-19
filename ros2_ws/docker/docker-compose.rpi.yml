@@ -34,6 +34,8 @@ services:
       - "c 81:* rmw"    # V4L2 cameras, including /dev/video10.
       - "c 188:* rmw"   # USB serial adapters, including /dev/rplidar targets.
       - "c 204:* rmw"   # Raspberry Pi UARTs, including /dev/ttyAMA0.
+      - "c 89:* rmw"    # I2C buses, including /dev/i2c-1 (Qwiic).
+      - "c 254:* rmw"   # GPIO character devices, including /dev/gpiochip4 (RPi 5 40-pin header).
 
     group_add:
       - dialout

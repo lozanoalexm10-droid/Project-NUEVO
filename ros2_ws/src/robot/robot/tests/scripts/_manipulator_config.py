@@ -8,12 +8,12 @@ from robot.arm_kinematics import ArmGeometry
 from robot.hardware_map import ServoChannel, Stepper
 
 # ── Turntable ─────────────────────────────────────────────────────────────────
-TURNTABLE_STEPPER       = Stepper.STEPPER_1
+TURNTABLE_STEPPER       = Stepper.STEPPER_2
 MOTOR_STEPS_PER_REV     = 200               # native steps (1.8°/step)
-MICROSTEP               = 16                # confirm against firmware StepConfig
+MICROSTEP               = 8                 # 1/8 microstep — M0=HIGH, M1=HIGH, M2=LOW on DRV8825
 PULLEY_RATIO            = 4.0               # GT2 belt: 4 motor revs per 1 turntable rev
-TURNTABLE_MAX_VELOCITY  = 2000              # steps/sec at motor shaft
-TURNTABLE_ACCELERATION  = 1000             # steps/sec² at motor shaft
+TURNTABLE_MAX_VELOCITY  = 2800              # steps/sec at motor shaft (~156°/sec at turntable) — validated no-load max is 3200; margin for belt+turntable inertia
+TURNTABLE_ACCELERATION  = 1000             # steps/sec²
 # Angle convention (CCW positive, looking down from above):
 #   -90° = robot's right side   (max CW — cable hard limit)
 #     0° = forward
@@ -54,21 +54,20 @@ GRIPPER_CLOSE_DEG    = 120.0                # fully closed hard stop
 GRIPPER_ROAST_DEG    = 60.0                 # slightly open during roasting
 
 # ── Heating wire ──────────────────────────────────────────────────────────────
-# TODO: confirm whether this is a DC motor channel in PWM mode or a GPIO relay.
-# Current assumption: DC_M3 in PWM mode through set_motor_pwm().
-HEATING_WIRE_MOTOR_ID = 3                   # Motor.DC_M3
-HEATING_WIRE_PWM_ON   = 64                  # −255 to 255 scale — start very low, increase only after verifying temp
-HEATING_WIRE_PWM_OFF  = 0
+# Controlled via 1-channel 5V optical relay module (active LOW, Handson MDU1150).
+# Wiring: remove VCC↔JD-VCC jumper; JD-VCC→5V, VCC→3.3V, GND→GND, IN1→GPIO pin below.
+# Relay output: heating wire between COM and NO terminals.
+HEATING_WIRE_GPIO_PIN = 17     # TODO: set to BCM GPIO pin wired to relay IN1
 
-# ── Camera pan stepper (Stepper 2) ────────────────────────────────────────────
+# ── Camera pan stepper (Stepper 3) ────────────────────────────────────────────
 # Motor: 28BYJ-48 rewired as bipolar (center tap removed).
 # Internal gear reduction is 64:1, giving 2048 full-step pulses per output revolution.
 # No microstepping required — the gear reduction already provides ~0.176°/step resolution.
 # Three scan positions at ±45° with 62° HFOV gives 17° frame overlap (no blind spots).
-CAMPAN_STEPPER          = Stepper.STEPPER_2
+CAMPAN_STEPPER          = Stepper.STEPPER_3
 CAMPAN_STEPS_PER_REV    = 2048             # 28BYJ-48 bipolar full-step: 32 motor steps × 64:1 internal gear
-CAMPAN_MICROSTEP        = 1               # full step — M0/M1/M2 inaccessible; gear gives sufficient resolution
-CAMPAN_PULLEY_RATIO     = 1.0             # direct drive — no external belt or gear
+CAMPAN_MICROSTEP        = 1               # no microstepping — DRV8825 M0/M1/M2 not connected on this channel
+CAMPAN_PULLEY_RATIO     = 1.0             # direct drive — no belt or pulley
 CAMPAN_MAX_VELOCITY     = 200             # steps/sec (output shaft) — conservative for 28BYJ-48 low torque
 CAMPAN_ACCELERATION     = 100             # steps/sec² (output shaft)
 CAMPAN_POSITIONS_DEG    = [-45.0, 0.0, 45.0]   # left → center → right (CCW negative = left)

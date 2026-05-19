@@ -9,6 +9,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
+from sensor_msgs.msg import Range
+
 from bridge_interfaces.msg import (
     DCEnable,
     DCHome,
@@ -135,6 +137,7 @@ class BridgeNode(Node):
         self.create_subscription(TrackedObstacleArray, '/obstacle_tracks', self._on_obstacle_tracks, best_effort)
         self.create_subscription(VirtualTarget, '/virtual_target', self._on_virtual_target, best_effort)
         self.create_subscription(TagDetectionArray, '/tag_detections',     self._on_tag_detections, 10)
+        self.create_subscription(Range,             '/ultrasonic_range',   self._on_ultrasonic_range, best_effort)
 
         # ROS node introspection at ~1.5 Hz
         self.create_timer(1.0 / 1.5, self._publish_ros_nodes)
@@ -458,6 +461,21 @@ class BridgeNode(Node):
             "topic": "ros_nodes",
             "data": {"nodes": nodes},
             "ts": now,
+        })
+
+    def _on_ultrasonic_range(self, msg: Range) -> None:
+        valid = msg.min_range <= msg.range <= msg.max_range
+        self._ws_broadcast({
+            "topic": "sensor_ultrasonic_all",
+            "data": {
+                "configuredCount": 1,
+                "sensors": [{
+                    "status": 0 if valid else 1,
+                    "distanceMm": int(msg.range * 1000) if valid else 0,
+                }],
+                "timestamp": msg.header.stamp.sec * 1000 + msg.header.stamp.nanosec // 1_000_000,
+            },
+            "ts": time.time(),
         })
 
     def spin_in_thread(self) -> threading.Thread:

@@ -53,6 +53,7 @@ def configure_robot(robot: Robot) -> None:
     )
     robot.enable_lidar()
     robot.enable_gps()
+    robot.enable_ultrasonic()
     robot.set_tracked_tag_id(TAG_ID)
 
     robot.set_orientation_fusion_alpha(0.0)

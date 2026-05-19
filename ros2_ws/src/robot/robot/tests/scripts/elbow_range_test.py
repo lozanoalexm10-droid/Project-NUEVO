@@ -18,7 +18,7 @@ import time
 
 from robot.robot import FirmwareState, Robot
 
-from _manipulator_config import (
+from robot.tests.scripts._manipulator_config import (
     ELBOW_CHANNEL,
     ELBOW_EXTEND_DEG,
     ELBOW_SAFE_MAX,

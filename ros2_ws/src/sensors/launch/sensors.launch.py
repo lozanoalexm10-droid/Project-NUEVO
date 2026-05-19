@@ -10,4 +10,10 @@ def generate_launch_description():
             name="robot_gps",
             output="screen",
         ),
+        Node(
+            package="sensors",
+            executable="qwiic_ultrasonic",
+            name="qwiic_ultrasonic",
+            output="screen",
+        ),
     ])

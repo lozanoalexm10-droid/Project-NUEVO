@@ -37,7 +37,10 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     "pyserial>=3.5,<4.0" \
     "websockets>=12.0,<13.0" \
     "PyJWT>=2.8.0,<3.0" \
-    "passlib[bcrypt]>=1.7.4"
+    "passlib[bcrypt]>=1.7.4" \
+    "smbus2>=0.4.0" \
+    "gpiozero>=2.0" \
+    "lgpio>=0.2.2"
 
 # ── Camera loopback client deps ──────────────────────────────────────────────
 # The Pi CSI camera is managed by the native Ubuntu host. The ROS container

@@ -44,7 +44,7 @@ except (ImportError, ModuleNotFoundError):
             self.depth = depth
 
 try:
-    from sensor_msgs.msg import LaserScan
+    from sensor_msgs.msg import LaserScan, Range
 except (ImportError, ModuleNotFoundError):
     class LaserScan:  # type: ignore[no-redef]
         ranges = ()
@@ -53,6 +53,11 @@ except (ImportError, ModuleNotFoundError):
         angle_increment = 0.0
         range_min = 0.0
         range_max = 0.0
+
+    class Range:  # type: ignore[no-redef]
+        range = 0.0
+        min_range = 0.0
+        max_range = 0.0
 
 from robot.sensor_fusion import GpsTangentOrientationFusion, OrientationComplementaryFilter, SensorFusion
 
@@ -138,6 +143,19 @@ class SensorsMixin:
             '/vision/detections',
             self._on_vision_detections,
             10,
+        )
+
+    def enable_ultrasonic(self) -> None:
+        """Subscribe to /ultrasonic_range (SparkFun Qwiic TCT40 via RPi I2C)."""
+        self._node.create_subscription(
+            Range,
+            '/ultrasonic_range',
+            self._on_ultrasonic_range,
+            QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            ),
         )
 
     # =========================================================================
@@ -638,3 +656,75 @@ class SensorsMixin:
         with self._lock:
             last_time = self._vision_last_time
         return last_time > 0.0 and (_time.monotonic() - last_time) < float(timeout_s)
+
+    # =========================================================================
+    # Ultrasonic
+    # =========================================================================
+
+    def _on_ultrasonic_range(self, msg: Range) -> None:
+        valid = msg.min_range <= msg.range <= msg.max_range
+        with self._lock:
+            self._ultrasonic_range_mm = float(msg.range * 1000.0) if valid else None
+            self._ultrasonic_last_time = _time.monotonic()
+
+    def get_ultrasonic_mm(self, timeout_s: float = 0.5) -> float | None:
+        """Return the latest ultrasonic distance in mm, or None if stale/out-of-range.
+
+        Call enable_ultrasonic() once before using this.
+        Returns None if no valid reading has arrived within timeout_s seconds.
+        """
+        with self._lock:
+            last_time = self._ultrasonic_last_time
+            value = self._ultrasonic_range_mm
+        if last_time == 0.0 or (_time.monotonic() - last_time) > timeout_s:
+            return None
+        return value
+
+    def is_ultrasonic_active(self, timeout_s: float = 0.5) -> bool:
+        """Return True if a valid ultrasonic reading arrived within timeout_s seconds."""
+        return self.get_ultrasonic_mm(timeout_s=timeout_s) is not None
+
+    # =========================================================================
+    # Relay (RPi GPIO → heating wire)
+    # =========================================================================
+
+    def enable_relay(self, gpio_pin: int) -> None:
+        """Open a gpiozero OutputDevice on gpio_pin (BCM) for the heating wire relay.
+
+        The relay board is active-LOW: calling set_relay(True) drives the pin LOW
+        (relay closes, wire powered); set_relay(False) drives HIGH (relay open).
+        The pin starts HIGH (relay open / wire off) for safety.
+        """
+        try:
+            from gpiozero import OutputDevice
+            from gpiozero.pins.lgpio import LGPIOFactory
+            from gpiozero import Device
+            Device.pin_factory = LGPIOFactory()
+        except ImportError:
+            raise RuntimeError(
+                "gpiozero and lgpio are required for relay control. "
+                "Add 'gpiozero lgpio' to Dockerfile pip install block."
+            )
+        relay = OutputDevice(gpio_pin, active_high=False, initial_value=False)
+        self._relay_device = relay
+
+    def set_relay(self, on: bool) -> None:
+        """Turn the heating wire relay on (True) or off (False).
+
+        Call enable_relay() first.
+        """
+        relay = getattr(self, '_relay_device', None)
+        if relay is None:
+            raise RuntimeError("Call enable_relay(gpio_pin) before set_relay().")
+        if on:
+            relay.on()
+        else:
+            relay.off()
+
+    def disable_relay(self) -> None:
+        """Turn off the relay and release the GPIO pin."""
+        relay = getattr(self, '_relay_device', None)
+        if relay is not None:
+            relay.off()
+            relay.close()
+            self._relay_device = None

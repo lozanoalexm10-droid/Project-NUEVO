@@ -10,19 +10,16 @@ Safety:
     around a marshmallow or an equivalent heat-safe test object, not open in free air.
   - Have a fire extinguisher within reach.
   - Do not leave the wire powered unattended.
-  - Start with HEATING_WIRE_PWM_ON set LOW (≤ 64) and increase only if needed.
-    The PWM range is −255 to 255. Full power is 255.
-  - The wire should glow faintly orange at full power — if it glows bright white, cut
-    power immediately and reduce PWM.
+  - The wire should glow faintly orange — if it glows bright white, cut power immediately.
+
+Hardware: 1-channel 5V optical relay module (active LOW) on RPi GPIO.
+  Wiring: JD-VCC→5V, VCC→3.3V, GND→GND, IN1→BCM HEATING_WIRE_GPIO_PIN.
+  Relay output: heating wire between COM and NO terminals.
 
 Pass criteria:
-  - Wire heats visibly (orange glow or temperature change on target) at PWM_ON duty.
-  - Wire cools and stops glowing within a few seconds of PWM_OFF.
+  - Wire heats visibly (orange glow or temperature change on target).
+  - Wire cools and stops glowing within a few seconds of relay open.
   - No unexpected sparks, smoke, or mechanical damage.
-
-TODO: Confirm HEATING_WIRE_MOTOR_ID and control method with firmware team.
-      If the heating wire is controlled via a relay instead of PWM, replace
-      set_motor_pwm() with the appropriate relay command once that API exists.
 
 Nodes required:  robot
 """
@@ -30,44 +27,36 @@ from __future__ import annotations
 
 import time
 
-from robot.hardware_map import DCMotorMode
 from robot.robot import FirmwareState, Robot
 
-from _manipulator_config import (
-    HEATING_WIRE_MOTOR_ID,
-    HEATING_WIRE_PWM_OFF,
-    HEATING_WIRE_PWM_ON,
-)
+from robot.tests.scripts._manipulator_config import HEATING_WIRE_GPIO_PIN
 
-PREHEAT_S  = 3.0   # seconds to hold power on during test
-COOLDOWN_S = 5.0   # seconds to wait after power off before declaring safe
+PREHEAT_S  = 3.0   # seconds to hold relay closed during test
+COOLDOWN_S = 5.0   # seconds to wait after relay opens before declaring safe
 
 
 def run(robot: Robot) -> None:
     print("[TEST] heating_wire_test")
-    print(f"[TEST] motor_id={HEATING_WIRE_MOTOR_ID}  PWM_ON={HEATING_WIRE_PWM_ON}  PWM_OFF={HEATING_WIRE_PWM_OFF}")
+    print(f"[TEST] relay GPIO pin (BCM)={HEATING_WIRE_GPIO_PIN}")
     print("[TEST] !! FIRE HAZARD — confirm safety checks before proceeding !!")
-    print(f"[TEST] Wire will be powered for {PREHEAT_S}s at PWM={HEATING_WIRE_PWM_ON}")
+    print(f"[TEST] Wire will be powered for {PREHEAT_S}s")
 
     robot.set_state(FirmwareState.RUNNING)
 
-    # Ensure wire starts off
-    robot.enable_motor(HEATING_WIRE_MOTOR_ID, DCMotorMode.PWM)
-    robot.set_motor_pwm(HEATING_WIRE_MOTOR_ID, HEATING_WIRE_PWM_OFF)
+    robot.enable_relay(HEATING_WIRE_GPIO_PIN)
+    robot.set_relay(False)   # ensure off
     time.sleep(0.5)
 
-    # Power on
-    print(f"[TEST] Powering ON heating wire (PWM={HEATING_WIRE_PWM_ON})")
-    robot.set_motor_pwm(HEATING_WIRE_MOTOR_ID, HEATING_WIRE_PWM_ON)
+    print("[TEST] Closing relay — heating wire ON")
+    robot.set_relay(True)
     time.sleep(PREHEAT_S)
 
-    # Power off
-    print("[TEST] Powering OFF heating wire")
-    robot.set_motor_pwm(HEATING_WIRE_MOTOR_ID, HEATING_WIRE_PWM_OFF)
+    print("[TEST] Opening relay — heating wire OFF")
+    robot.set_relay(False)
 
     print(f"[TEST] Cooling down ({COOLDOWN_S}s) — do not touch wire")
     time.sleep(COOLDOWN_S)
 
-    robot.disable_motor(HEATING_WIRE_MOTOR_ID)
-    print("[TEST] PASS — wire powered on and off without fault")
-    print("[TEST] Verify: wire glowed at expected level, cooled after shutoff, no damage")
+    robot.disable_relay()
+    print("[TEST] PASS — relay opened and closed without fault")
+    print("[TEST] Verify: wire glowed at expected level, cooled after relay opened, no damage")
