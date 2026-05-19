@@ -207,13 +207,13 @@ where $R_{CS}$ is the current-sense resistor value on the module (typically **0.
 
 **DRV8825** — current limit formula:
 
-$$I_{max} = \frac{V_{REF}}{2 \times R_{CS}}$$
+$$I_{max} = \frac{V_{REF}}{5 \times R_{CS}}$$
 
-where $R_{CS}$ is typically **0.100 Ω** on Pololu-style DRV8825 modules.
+where $R_{CS}$ is typically **0.100 Ω** on Pololu-style DRV8825 modules (SMD resistors labeled "R100").
 
 | $R_{CS}$ | $V_{REF}$ for 1.0 A | $V_{REF}$ for 1.5 A | $V_{REF}$ for 2.0 A |
 |----------|---------------------|---------------------|---------------------|
-| 0.100 Ω | 0.20 V | 0.30 V | 0.40 V |
+| 0.100 Ω | 0.50 V | 0.75 V | 1.00 V |
 
 **Procedure:**
 
