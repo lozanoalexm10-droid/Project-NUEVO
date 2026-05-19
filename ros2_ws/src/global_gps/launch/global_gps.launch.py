@@ -56,7 +56,7 @@ _IMAGE_SOURCE_CONFIGS = {
             "enable_infra2": "false",
             "align_depth.enable": "false",
             "depth_module.emitter_enabled": "0",
-            "depth_module.depth_profile": "1280x720x30",
+            "depth_module.infra_profile": "1280x720x30",
         },
         "remappings": [
             ("image_raw", "/camera/camera/infra1/image_rect_raw"),
@@ -135,7 +135,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "image_source",
-            default_value="color",
+            default_value="infra1",
             choices=list(_IMAGE_SOURCE_CONFIGS),
             description=(
                 "Which camera stream to feed the localizer. "
