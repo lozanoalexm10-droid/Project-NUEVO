@@ -61,17 +61,18 @@ HEATING_WIRE_PWM_ON   = 64                  # −255 to 255 scale — start very
 HEATING_WIRE_PWM_OFF  = 0
 
 # ── Camera pan stepper (Stepper 2) ────────────────────────────────────────────
-# Pans the camera to cover the full ±90° scan zone in three overlapping frames.
-# With CAMERA_HFOV_DEG = 102° and positions spaced 60° apart, adjacent frames
-# share a 42° overlap region so no marshmallow falls through the cracks.
+# Motor: 28BYJ-48 rewired as bipolar (center tap removed).
+# Internal gear reduction is 64:1, giving 2048 full-step pulses per output revolution.
+# No microstepping required — the gear reduction already provides ~0.176°/step resolution.
+# Three scan positions at ±45° with 62° HFOV gives 17° frame overlap (no blind spots).
 CAMPAN_STEPPER          = Stepper.STEPPER_2
-CAMPAN_STEPS_PER_REV    = 200              # native steps (1.8°/step)
-CAMPAN_MICROSTEP        = 16              # TODO: confirm against firmware StepConfig
-CAMPAN_PULLEY_RATIO     = 1.0            # TODO: confirm belt/gear ratio — 1.0 = direct drive
-CAMPAN_MAX_VELOCITY     = 500            # steps/sec
-CAMPAN_ACCELERATION     = 300            # steps/sec²
-CAMPAN_POSITIONS_DEG    = [-60.0, 0.0, 60.0]   # left → center → right (CCW negative = left)
-CAMPAN_SETTLE_S         = 0.3            # seconds to wait after panning before capturing
+CAMPAN_STEPS_PER_REV    = 2048             # 28BYJ-48 bipolar full-step: 32 motor steps × 64:1 internal gear
+CAMPAN_MICROSTEP        = 1               # full step — M0/M1/M2 inaccessible; gear gives sufficient resolution
+CAMPAN_PULLEY_RATIO     = 1.0             # direct drive — no external belt or gear
+CAMPAN_MAX_VELOCITY     = 200             # steps/sec (output shaft) — conservative for 28BYJ-48 low torque
+CAMPAN_ACCELERATION     = 100             # steps/sec² (output shaft)
+CAMPAN_POSITIONS_DEG    = [-45.0, 0.0, 45.0]   # left → center → right (CCW negative = left)
+CAMPAN_SETTLE_S         = 0.3             # seconds to wait after panning before capturing
 
 STEPS_PER_CAMPAN_DEG = (CAMPAN_STEPS_PER_REV * CAMPAN_MICROSTEP * CAMPAN_PULLEY_RATIO) / 360.0
 
