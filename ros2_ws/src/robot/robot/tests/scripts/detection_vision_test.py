@@ -27,12 +27,15 @@ from __future__ import annotations
 import math
 import time
 
+from robot.arm_kinematics import detection_to_robot_frame
 from robot.robot import FirmwareState, Robot
 
 from robot.tests.scripts._manipulator_config import (
+    ARM_GEOMETRY,
     CAMERA_HFOV_DEG,
     MARSHMALLOW_CLASS,
     MARSHMALLOW_DIAMETER_MM,
+    MARSHMALLOW_HEIGHT_MM,
     MIN_CONFIDENCE_MARSHMALLOW,
     VISION_WAIT_S,
 )
@@ -123,15 +126,27 @@ def run(robot: Robot) -> None:
         in_zone = ZONE_NEAR_MM <= dist_mm <= ZONE_FAR_MM
         zone_tag = "IN ZONE" if in_zone else f"out of zone ({ZONE_NEAR_MM:.0f}–{ZONE_FAR_MM:.0f} mm)"
 
+        # Translate to turntable-axis robot frame (campan=0 for static test).
+        ik_x, ik_y, ik_z = detection_to_robot_frame(
+            distance_mm=dist_mm,
+            bearing_deg=bearing_deg,
+            height_mm=MARSHMALLOW_HEIGHT_MM,
+            geom=ARM_GEOMETRY,
+            campan_deg=0.0,  # update when running with campan sweep
+        )
         print(
             f"[TEST]   conf={conf:.2f}"
-            f"  bearing={bearing_deg:+.1f}°"
-            f"  elevation={elevation_deg:+.1f}°"
-            f"  dist_est={dist_mm:.0f}mm ({dist_mm/25.4:.1f}in)"
-            f"  bbox_center=({cx:.0f},{cy:.0f})"
+            f"  bearing={bearing_deg:+.1f}°  elevation={elevation_deg:+.1f}°"
+            f"  dist_from_camera={dist_mm:.0f}mm ({dist_mm/25.4:.1f}in)"
             f"  [{zone_tag}]"
         )
-        print(f"[TEST]     robot_bearing = campan_angle_deg + ({bearing_deg:+.1f}°)")
+        print(
+            f"[TEST]     IK target (turntable frame): x={ik_x:.0f}mm  y={ik_y:.0f}mm  z={ik_z:.0f}mm"
+        )
+        print(
+            f"[TEST]     Note: robot_bearing_deg = -(campan_deg + bearing_deg)"
+            f" = -({0.0:.1f} + {bearing_deg:.1f}) = {-(0.0+bearing_deg):.1f}°"
+        )
 
         if conf > best_conf:
             best_conf = conf

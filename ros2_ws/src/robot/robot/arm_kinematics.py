@@ -90,6 +90,12 @@ class ArmGeometry:
     shoulder_servo_sign: float = 1.0
     elbow_servo_offset: float = 90.0
     elbow_servo_sign: float = 1.0
+    camera_forward_offset_mm: float = 0.0
+    # distance from turntable axis to the camera/campan axis along the robot's
+    # forward direction (+x).  Approximately equal to the distance from the
+    # turntable axis to the front face of the robot.
+    # Measure and set in _manipulator_config.py; the default (0) falls back to
+    # the old behavior of treating distances as originating at the turntable axis.
 
     def shoulder_geo_to_servo(self, geo_deg: float) -> float:
         """Convert shoulder geometric angle (deg above horizontal) to servo angle."""
@@ -241,20 +247,50 @@ def is_reachable(x_mm: float, y_mm: float, z_mm: float, geom: ArmGeometry) -> bo
 
 def detection_to_robot_frame(
     distance_mm: float,
-    bearing_rad: float,
+    bearing_deg: float,
     height_mm: float,
+    geom: ArmGeometry,
+    campan_deg: float = 0.0,
 ) -> tuple[float, float, float]:
     """
-    Convert a detection result to robot-frame (x, y, z) coordinates.
+    Convert a camera detection to turntable-axis robot-frame (x, y, z) for IK.
+
+    Sign conventions (both use CW-positive, matching the campan stepper and
+    the camera bearing output from detection_vision_test):
+        bearing_deg  positive = right of camera center
+        campan_deg   positive = camera pointing right
+
+    The returned coordinates use the turntable axis as origin — the same frame
+    that inverse_kinematics() expects.  The camera/campan axis sits at
+    geom.camera_forward_offset_mm ahead of the turntable axis on the robot body;
+    this offset is added so that distances measured from the camera are correctly
+    translated into turntable-axis coordinates.
+
+    Example: marshmallow 152 mm (6 in) in front of camera, camera pointing
+    forward (campan=0, bearing=0):
+        x_mm = camera_forward_offset_mm + 152   (e.g. 102 + 152 = 254 mm from turntable)
+        y_mm = 0
 
     Args:
-        distance_mm   horizontal distance from robot to target (from sensor)
-        bearing_rad   angle from robot forward axis, CCW positive (from sensor)
-        height_mm     height of target above robot base plate (from sensor or known)
+        distance_mm  horizontal distance from camera/sensor to target
+        bearing_deg  horizontal angle from camera centre (positive = right)
+        height_mm    target height above robot base plate
+        geom         ArmGeometry — used for camera_forward_offset_mm
+        campan_deg   camera pan stepper angle (positive = right)
 
     Returns:
-        (x_mm, y_mm, z_mm) in robot frame, ready to pass to inverse_kinematics()
+        (x_mm, y_mm, z_mm) in robot frame (turntable axis origin),
+        ready for inverse_kinematics().
     """
-    x_mm = distance_mm * math.cos(bearing_rad)
-    y_mm = distance_mm * math.sin(bearing_rad)
+    # Camera/campan axis is fixed on the robot body at (camera_forward_offset_mm, 0).
+    # It does not translate when the campan motor rotates — only the camera view rotates.
+    cam_x = geom.camera_forward_offset_mm
+    cam_y = 0.0
+
+    # Convert to robot-frame CCW-positive (standard math convention).
+    # Both campan_deg and bearing_deg use positive=right (CW), so negate to get CCW.
+    robot_bearing_rad = -math.radians(campan_deg + bearing_deg)
+
+    x_mm = cam_x + distance_mm * math.cos(robot_bearing_rad)
+    y_mm = cam_y + distance_mm * math.sin(robot_bearing_rad)
     return x_mm, y_mm, height_mm

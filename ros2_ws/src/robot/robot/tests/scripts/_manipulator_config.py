@@ -88,7 +88,15 @@ ULTRASONIC_HEIGHT_OFFSET_MM  = 0.0    # TODO: sensor height above forearm center
 ARM_L1_MM               = 150.0    # upper arm: shoulder pivot → elbow pivot
 ARM_L2_MM               = 130.0    # forearm:   elbow pivot   → gripper center
 ARM_SHOULDER_HEIGHT_MM  = 120.0    # shoulder pivot height above robot base plate
-ARM_SHOULDER_OFFSET_MM  = 20.0     # forward distance from turntable axis to shoulder pivot
+ARM_SHOULDER_OFFSET_MM  = 25.4     # forward distance from turntable axis to shoulder pivot (~1 inch — measure)
+
+# Distance from turntable rotation axis to the front face of the robot (mm).
+# The camera/campan axis lives roughly at this position (+x forward).
+# Used by detection_to_robot_frame() to translate camera distances into
+# turntable-axis coordinates for IK.  A marshmallow 6 in (152 mm) from the
+# robot front is 152 + ROBOT_FRONT_TO_TURNTABLE_MM from the turntable axis.
+# TODO: measure on physical robot (currently set to 4 in = 101.6 mm).
+ROBOT_FRONT_TO_TURNTABLE_MM = 101.6
 
 # Servo calibration — run arm_ik_calibration_test.py to determine these values.
 # shoulder_servo_offset: servo angle (deg) when upper arm is horizontal (geometric 0°)
@@ -102,14 +110,15 @@ ELBOW_SERVO_SIGN        = -1.0     # lower angle = forearm up (opens), higher an
 
 # Assembled geometry object — import this in programs and tests that use IK.
 ARM_GEOMETRY = ArmGeometry(
-    L1                  = ARM_L1_MM,
-    L2                  = ARM_L2_MM,
-    shoulder_height_mm  = ARM_SHOULDER_HEIGHT_MM,
-    shoulder_offset_mm  = ARM_SHOULDER_OFFSET_MM,
-    shoulder_servo_offset = SHOULDER_SERVO_OFFSET,
-    shoulder_servo_sign   = SHOULDER_SERVO_SIGN,
-    elbow_servo_offset    = ELBOW_SERVO_OFFSET,
-    elbow_servo_sign      = ELBOW_SERVO_SIGN,
+    L1                       = ARM_L1_MM,
+    L2                       = ARM_L2_MM,
+    shoulder_height_mm       = ARM_SHOULDER_HEIGHT_MM,
+    shoulder_offset_mm       = ARM_SHOULDER_OFFSET_MM,
+    shoulder_servo_offset    = SHOULDER_SERVO_OFFSET,
+    shoulder_servo_sign      = SHOULDER_SERVO_SIGN,
+    elbow_servo_offset       = ELBOW_SERVO_OFFSET,
+    elbow_servo_sign         = ELBOW_SERVO_SIGN,
+    camera_forward_offset_mm = ROBOT_FRONT_TO_TURNTABLE_MM,
 )
 
 # ── Servo motion ─────────────────────────────────────────────────────────────
