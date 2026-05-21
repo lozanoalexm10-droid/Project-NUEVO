@@ -142,6 +142,11 @@ PLATE_Z_MM               = 30.0    # TODO: measure plate height above base plate
 # Raspberry Pi Camera Module v2 with default lens: ~62° HFOV.
 CAMERA_HFOV_DEG          = 62.0    # TODO: verify for your specific lens
 
+# Physical diameter of a standard large marshmallow (~1.5 in / 38 mm).
+# Used in the pinhole distance estimate: dist_mm = (MARSHMALLOW_DIAMETER_MM * focal_px) / px_diameter
+# Measure your actual marshmallow and update if needed.
+MARSHMALLOW_DIAMETER_MM  = 38.0
+
 # ── Detection ─────────────────────────────────────────────────────────────────
 MARSHMALLOW_CLASS        = "marshmallow"      # class name from vision model
 ROASTING_STICK_CLASS     = "roasting_stick"   # TODO: confirm class name with vision team

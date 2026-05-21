@@ -17,6 +17,7 @@ from vision.model_utils import (
     resolve_model_path,
 )
 from vision.rule_based_detection import (
+    detect_marshmallow,
     detect_yellow_block,
 )
 from vision.stop_sign import classify_stop_sign_visibility
@@ -156,6 +157,9 @@ class VisionNode(Node):
     def _detect_yellow_block(self, frame):
         return detect_yellow_block(frame)
 
+    def _detect_marshmallow(self, frame):
+        return detect_marshmallow(frame)
+
     def _build_detection_msg(self, detected_object: DetectedObject) -> VisionDetection:
         detection = VisionDetection()
         detection.class_name = detected_object.class_name
@@ -208,7 +212,8 @@ class VisionNode(Node):
             try:
                 yolo_detections = self._infer_yolo_detections(frame)
                 yellow_block_detections, yellow_block_overlays = self._detect_yellow_block(frame)
-                
+                marshmallow_detections, marshmallow_overlays   = self._detect_marshmallow(frame)
+
                 for detection in yolo_detections:
                     object_crop = frame[
                         detection.y : detection.y + detection.height,
@@ -232,7 +237,7 @@ class VisionNode(Node):
                         face_lighting_label, face_lighting_score = classify_person_face_lighting(person_crop)
                         detection.add_attribute("face_lighting", face_lighting_label, face_lighting_score)
                 
-                all_detections = yolo_detections + yellow_block_detections
+                all_detections = yolo_detections + yellow_block_detections + marshmallow_detections
 
                 message = self._build_detection_array_msg(
                     capture_stamp=capture_stamp,
@@ -244,11 +249,12 @@ class VisionNode(Node):
                 self._debug_writer.maybe_write(
                     frame_bgr=frame,
                     detected_objects=all_detections,
-                    debug_overlays=yellow_block_overlays,
+                    debug_overlays=yellow_block_overlays + marshmallow_overlays,
                 )
-                yolo_count = len(yolo_detections)
-                yellow_block_count = len(yellow_block_detections)
-                detection_count = len(message.detections)
+                yolo_count          = len(yolo_detections)
+                yellow_block_count  = len(yellow_block_detections)
+                marshmallow_count   = len(marshmallow_detections)
+                detection_count     = len(message.detections)
             except Exception as exc:
                 self.get_logger().error(f"Vision inference failed for one frame: {exc}")
                 yolo_count = 0
@@ -260,7 +266,7 @@ class VisionNode(Node):
             if now - self._last_loop_summary >= self._log_interval_sec:
                 self._last_loop_summary = now
                 self.get_logger().info(
-                    "Vision frame %dx%d total=%.1fms preprocess=%.1fms ncnn=%.1fms postprocess=%.1fms yolo=%d yellow_block=%d total=%d target_rate=%.1fHz"
+                    "Vision frame %dx%d total=%.1fms preprocess=%.1fms ncnn=%.1fms postprocess=%.1fms yolo=%d yellow_block=%d marshmallow=%d total=%d target_rate=%.1fHz"
                     % (
                         frame.shape[1],
                         frame.shape[0],
@@ -270,6 +276,7 @@ class VisionNode(Node):
                         self._detector.last_postprocess_ms,
                         yolo_count,
                         yellow_block_count,
+                        marshmallow_count,
                         detection_count,
                         self._process_rate_hz,
                     )

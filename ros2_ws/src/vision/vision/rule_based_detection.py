@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
 
@@ -78,3 +80,86 @@ def yellow_detection_score(contour_area: float, min_area_px: int, fill_ratio: fl
     area_score = min(1.0, contour_area / float(max(1, min_area_px * 4)))
     score = 0.55 * area_score + 0.45 * max(0.0, min(1.0, fill_ratio))
     return max(0.0, min(1.0, score))
+
+
+def detect_marshmallow(
+    frame_bgr: np.ndarray,
+) -> tuple[list[DetectedObject], list[DebugOverlay]]:
+    """Detect a white/off-white marshmallow using HSV color + shape filtering.
+
+    Marshmallows are low-saturation (white/cream), high-brightness, roughly
+    compact blobs. The aspect-ratio filter rejects thin strips (walls, paper
+    edges) that also match the white HSV range.
+    """
+    detections: list[DetectedObject] = []
+    debug_overlays: list[DebugOverlay] = []
+
+    blurred = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+
+    # White/off-white: any hue, low saturation, high brightness.
+    # OpenCV HSV: H 0-180, S 0-255, V 0-255.
+    white_low  = np.array([ 0,   0, 160], dtype=np.uint8)
+    white_high = np.array([180,  80, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, white_low, white_high)
+
+    # Open removes isolated noise; close fills small gaps inside the blob.
+    open_kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  open_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+
+    # Minimum blob size: allows marshmallow to be small when far away (~12 in).
+    min_area_px    = 400
+    min_fill_ratio = 0.30
+    max_aspect     = 3.0   # rejects thin walls, paper edges, bright fixtures
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        contour_area = float(cv2.contourArea(contour))
+        if contour_area < min_area_px:
+            continue
+
+        x, y, width, height = cv2.boundingRect(contour)
+        bbox_area  = float(max(1, width * height))
+        fill_ratio = contour_area / bbox_area
+        if fill_ratio < min_fill_ratio:
+            continue
+
+        aspect = max(width, height) / float(max(1, min(width, height)))
+        if aspect > max_aspect:
+            continue
+
+        confidence = _marshmallow_score(contour_area, min_area_px, fill_ratio, aspect)
+        detection  = DetectedObject(
+            class_name="marshmallow",
+            confidence=confidence,
+            x=int(x),
+            y=int(y),
+            width=int(width),
+            height=int(height),
+        )
+        detection.add_attribute("color", "white", 1.0)
+        detections.append(detection)
+        debug_overlays.append(
+            DebugOverlay(
+                color=(200, 200, 200),
+                contour=contour,
+                label=f"marshmallow {confidence:.2f}",
+                x=int(x),
+                y=int(y),
+            )
+        )
+
+    return detections, debug_overlays
+
+
+def _marshmallow_score(
+    contour_area: float, min_area_px: int, fill_ratio: float, aspect: float
+) -> float:
+    """Confidence in [0, 1] from area, fill compactness, and aspect closeness to 1."""
+    area_score   = min(1.0, contour_area / float(max(1, min_area_px * 6)))
+    fill_score   = max(0.0, min(1.0, fill_ratio))
+    # aspect_score is 1.0 for a perfect square, 0.0 when aspect == max_aspect (3.0)
+    aspect_score = max(0.0, 1.0 - (aspect - 1.0) / 2.0)
+    return max(0.0, min(1.0, 0.40 * area_score + 0.35 * fill_score + 0.25 * aspect_score))
