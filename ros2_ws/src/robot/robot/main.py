@@ -1,1 +1,1 @@
-from robot.tests.scripts.turntable_range_test import run  # noqa: F401
+from robot.programs.final_demo import run  # noqa: F401

@@ -54,6 +54,7 @@ def configure_robot(robot: Robot) -> None:
     robot.enable_lidar()
     robot.enable_gps()
     robot.enable_ultrasonic()
+    robot.enable_vision()
     robot.set_tracked_tag_id(TAG_ID)
 
     robot.set_orientation_fusion_alpha(0.0)
@@ -97,9 +98,12 @@ OBSTACLE_FIELD_PATH = [
 POST_OBSTACLE_PATH = [
     (1565.0, 3660.0),
     (2530.0, 3660.0),
-    (2530.0, 610.0),
+    (2533.0, 517.0),   # approach point: final leg to (2745, 305) is exactly 315° (-45°)
     (2745.0, 305.0),
 ]
+
+STOP_SIGN_DWELL_S        = 3.0   # seconds to hold at stop sign before continuing
+STOP_SIGN_CONFIDENCE_MIN = 0.50  # minimum confidence to count a stop sign detection
 
 
 def start_path_segment(
@@ -138,6 +142,9 @@ def run(robot: Robot) -> None:
     period = 1.0 / float(DEFAULT_FSM_HZ)
     next_tick = time.monotonic()
     state_entry_time = time.monotonic()
+
+    stop_sign_seen:    bool  = False
+    stop_sign_pause_t: float = 0.0
 
     while True:
         if state == "INIT":
@@ -180,14 +187,35 @@ def run(robot: Robot) -> None:
                 state_entry_time = time.monotonic()
 
         elif state == "MOVING_POST_OBSTACLE":
-            show_moving_leds(robot)
-            nav_state = robot._nav_follow_pp_path_loop()
-
-            if nav_state == "IDLE":
-                print("[FSM] Full venue route complete.")
+            if robot.get_button(Button.BTN_2):
                 robot.stop()
-                state = "DONE"
-                state_entry_time = time.monotonic()
+                robot.shutdown()
+                return
+
+            if stop_sign_seen and stop_sign_pause_t > 0.0:
+                robot.stop()
+                robot.set_led(LED.RED, 255)
+                robot.set_led(LED.GREEN, 0)
+                if time.monotonic() - stop_sign_pause_t >= STOP_SIGN_DWELL_S:
+                    print("[FSM] Stop sign dwell complete — resuming post-obstacle path.")
+                    stop_sign_pause_t = 0.0
+                    robot.set_led(LED.RED, 0)
+                    show_moving_leds(robot)
+            elif not stop_sign_seen and robot.get_detections("stop sign"):
+                robot.stop()
+                stop_sign_seen    = True
+                stop_sign_pause_t = time.monotonic()
+                robot.set_led(LED.RED, 255)
+                robot.set_led(LED.GREEN, 0)
+                print("[FSM] Stop sign detected — pausing 3s.")
+            else:
+                show_moving_leds(robot)
+                nav_state = robot._nav_follow_pp_path_loop()
+                if nav_state == "IDLE":
+                    print("[FSM] Full venue route complete.")
+                    robot.stop()
+                    state = "DONE"
+                    state_entry_time = time.monotonic()
 
         elif state == "DONE":
             show_idle_leds(robot)

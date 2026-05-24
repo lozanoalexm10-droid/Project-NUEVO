@@ -425,8 +425,8 @@ extern Print &DEBUG_SERIAL;
 // If no limit switches are used, leave these undefined
 // Homing is disabled if no limit switch pins are defined.
 
-#define PIN_ST1_LIMIT           PIN_LIM1  // Stepper 1 limit (40)
-// #define PIN_ST2_LIMIT           PIN_LIM2  // Stepper 2 limit (41)
+// #define PIN_ST1_LIMIT           PIN_LIM1  // Stepper 1 — reassigned; LIM1 used for turntable
+#define PIN_ST2_LIMIT           PIN_LIM1  // Turntable (ST2) stow/home limit — LIM1/BTN3
 // #define PIN_ST3_LIMIT           PIN_LIM3  // Stepper 3 limit (48)
 // #define PIN_ST4_LIMIT           PIN_LIM4  // Stepper 4 limit (49)
 

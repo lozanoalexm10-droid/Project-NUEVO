@@ -5,7 +5,7 @@ Edit channel/pin assignments here — all tests import from this file.
 from __future__ import annotations
 
 from robot.arm_kinematics import ArmGeometry
-from robot.hardware_map import ServoChannel, Stepper
+from robot.hardware_map import Motor, ServoChannel, Stepper
 
 # ── Turntable ─────────────────────────────────────────────────────────────────
 TURNTABLE_STEPPER       = Stepper.STEPPER_2
@@ -57,7 +57,13 @@ GRIPPER_ROAST_DEG    = 60.0                 # slightly open during roasting
 # Controlled via 1-channel 5V optical relay module (active LOW, Handson MDU1150).
 # Wiring: remove VCC↔JD-VCC jumper; JD-VCC→5V, VCC→3.3V, GND→GND, IN1→GPIO pin below.
 # Relay output: heating wire between COM and NO terminals.
-HEATING_WIRE_GPIO_PIN = 17     # TODO: set to BCM GPIO pin wired to relay IN1
+HEATING_WIRE_GPIO_PIN = 17     # TODO: confirm BCM GPIO pin wired to relay IN1
+# Relay is wired to DC motor output DC_M3 on the NUEVO PCB (confirm with firmware).
+# Active LOW relay: PWM 255 = relay OFF (line held high), PWM 0 = relay ON (line pulled low).
+# TODO: verify correct DC channel and polarity before powering heating wire.
+HEATING_WIRE_MOTOR_ID    = Motor.DC_M3   # TODO: confirm DC channel on NUEVO PCB
+HEATING_WIRE_PWM_ON      = 255           # TODO: active LOW relay — confirm correct value
+HEATING_WIRE_PWM_OFF     = 0            # relay inactive
 
 # ── Camera pan stepper (Stepper 3) ────────────────────────────────────────────
 # Motor: 28BYJ-48 rewired as bipolar (center tap removed).
@@ -134,38 +140,77 @@ ARM_CARRY_SHOULDER_DEG   = 100.0
 ARM_CARRY_ELBOW_DEG      = 90.0
 
 # ── Turntable home offset ─────────────────────────────────────────────────────
-# Manual homing: align the turntable to the forward mark before each run.
-# Position 0 = wherever the turntable sits at startup.
-TURNTABLE_HOME_OFFSET_DEG = 0.0
+# Firmware homing: step_home() sets position 0 at stow (LIM1 trigger = 180°).
+# All _turntable_to_deg() calls add this offset before converting to steps so that
+# our angle convention (0=forward, 180=stow) maps correctly onto the firmware counter.
+# After firmware homing: offset must be -TURNTABLE_MAX_DEG = -180.0.
+# Fallback (no limit switch / manual alignment to forward mark): offset = 0.0.
+TURNTABLE_HOME_OFFSET_DEG = -180.0   # set for firmware homing via LIM1
 
 # ── Target geometry (measure from competition venue, all mm, robot frame) ─────
 # Robot frame: x = forward, y = left, z = up; origin = turntable axis at base plate.
-MARSHMALLOW_HEIGHT_MM    = 80.0    # TODO: measure z of marshmallow above base plate
+MARSHMALLOW_HEIGHT_MM    = 80.0     # fallback height — runtime uses vision estimate
 MARSHMALLOW_DISTANCE_MM  = 200.0   # TODO: measure horizontal distance from turntable axis
-PLATE_X_MM               = 150.0   # TODO: measure plate center position
+# Plate is always 3 in (76.2 mm) forward of the robot front face.
+# Robot front to turntable axis = ROBOT_FRONT_TO_TURNTABLE_MM = 101.6 mm.
+# Plate center x = 76.2 + 101.6 = 177.8 mm from turntable axis.
+PLATE_X_MM               = 177.8   # 3 in forward of robot front (76.2 mm) + turntable offset (101.6 mm)
 PLATE_Y_MM               = 0.0     # plate is directly forward
-PLATE_Z_MM               = 30.0    # TODO: measure plate height above base plate
+PLATE_Z_MM               = 15.0    # graham cracker on plate (~10 mm cracker + small clearance)
 
 # ── Camera field of view ──────────────────────────────────────────────────────
-# Horizontal bearing from bounding-box pixel centre → turntable target angle.
 # Raspberry Pi Camera Module v2 with default lens: ~62° HFOV.
 CAMERA_HFOV_DEG          = 62.0    # TODO: verify for your specific lens
+
+# Height of the camera lens above the robot base plate (mm).
+# Used to convert bounding-box elevation angle + distance into target height.
+# Measure: hold a ruler from the base plate up to the camera lens centerline.
+# TODO: measure on physical robot.
+CAMERA_HEIGHT_MM         = 150.0
 
 # Physical diameter of a standard large marshmallow (~1.5 in / 38 mm).
 # Used in the pinhole distance estimate: dist_mm = (MARSHMALLOW_DIAMETER_MM * focal_px) / px_diameter
 # Measure your actual marshmallow and update if needed.
 MARSHMALLOW_DIAMETER_MM  = 38.0
+MARSHMALLOW_RADIUS_MM    = MARSHMALLOW_DIAMETER_MM / 2.0  # center-height above support surface
+
+# ── Red Solo cup height tiers ──────────────────────────────────────────────────
+# Standard red Solo cup: ~94mm tall. Marshmallow sits on top → center at +19mm above rim.
+# TODO: measure actual cup height and marshmallow diameter for your specific cups/marshmallows.
+CUP_SINGLE_HEIGHT_MM     = 94.0     # height of one Solo cup (mm)
+# Marshmallow center height above robot base plate for each stack height:
+MALLOW_HEIGHT_0_CUPS_MM  = MARSHMALLOW_RADIUS_MM                            # on plate (~19mm)
+MALLOW_HEIGHT_1_CUP_MM   = CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM    # ~113mm
+MALLOW_HEIGHT_2_CUPS_MM  = 2 * CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM # ~207mm
+MALLOW_HEIGHT_3_CUPS_MM  = 3 * CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM # ~301mm
+
+_CUP_TIER_HEIGHTS_MM = (
+    MALLOW_HEIGHT_0_CUPS_MM,
+    MALLOW_HEIGHT_1_CUP_MM,
+    MALLOW_HEIGHT_2_CUPS_MM,
+    MALLOW_HEIGHT_3_CUPS_MM,
+)
+
+def snap_to_cup_tier_mm(height_mm: float) -> float:
+    """Round a noisy height estimate to the nearest known cup-tier height."""
+    return min(_CUP_TIER_HEIGHTS_MM, key=lambda h: abs(h - height_mm))
 
 # ── Detection ─────────────────────────────────────────────────────────────────
 MARSHMALLOW_CLASS        = "marshmallow"      # class name from vision model
 ROASTING_STICK_CLASS     = "roasting_stick"   # TODO: confirm class name with vision team
 PLATE_CLASS              = "plate"            # TODO: confirm class name with vision team
+CUP_CLASS                = "red_cup"          # class name from rule_based_detection.detect_red_cup
 
 # Per-class confidence thresholds — tune independently during vision testing.
 MIN_CONFIDENCE               = 0.60           # legacy default used by detection_vision_test
 MIN_CONFIDENCE_MARSHMALLOW   = 0.60
 MIN_CONFIDENCE_ROASTING_STICK= 0.65
 MIN_CONFIDENCE_PLATE         = 0.70
+MIN_CONFIDENCE_CUP           = 0.50
+
+# Cup geometry — used for pinhole distance estimate and cup-mallow bearing match.
+CUP_DIAMETER_MM              = 95.0           # top rim outer diameter of a standard red Solo cup (mm)
+MALLOW_CUP_BEARING_MATCH_DEG = 10.0           # max bearing separation to pair a mallow with a cup
 
 # ── Competition sequence timing ───────────────────────────────────────────────
 STOP_SIGN_DWELL_S    = 3.0    # pause at stop sign before manipulator sequence begins

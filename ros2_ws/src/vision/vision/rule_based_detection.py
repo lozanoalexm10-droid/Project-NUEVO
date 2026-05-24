@@ -163,3 +163,81 @@ def _marshmallow_score(
     # aspect_score is 1.0 for a perfect square, 0.0 when aspect == max_aspect (3.0)
     aspect_score = max(0.0, 1.0 - (aspect - 1.0) / 2.0)
     return max(0.0, min(1.0, 0.40 * area_score + 0.35 * fill_score + 0.25 * aspect_score))
+
+
+def detect_red_cup(
+    frame_bgr: np.ndarray,
+) -> tuple[list[DetectedObject], list[DebugOverlay]]:
+    """Detect red Solo cups using dual-range HSV masking.
+
+    Red wraps around H=0/180 in OpenCV HSV, so two ranges are combined.
+    Filters by area, fill ratio, and aspect ratio to reject thin red strips
+    and small noise blobs.
+    """
+    detections: list[DetectedObject] = []
+    debug_overlays: list[DebugOverlay] = []
+
+    blurred = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+
+    # Red wraps around H=0 — use two ranges and OR them together.
+    mask_lo = cv2.inRange(hsv, np.array([ 0, 100,  80], dtype=np.uint8),
+                               np.array([10, 255, 255], dtype=np.uint8))
+    mask_hi = cv2.inRange(hsv, np.array([165, 100,  80], dtype=np.uint8),
+                               np.array([180, 255, 255], dtype=np.uint8))
+    mask = cv2.bitwise_or(mask_lo, mask_hi)
+
+    open_kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  open_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+
+    min_area_px    = 800   # cup body should occupy a reasonable number of pixels
+    min_fill_ratio = 0.30
+    max_aspect     = 3.0   # reject very elongated red strips
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        contour_area = float(cv2.contourArea(contour))
+        if contour_area < min_area_px:
+            continue
+
+        x, y, width, height = cv2.boundingRect(contour)
+        bbox_area  = float(max(1, width * height))
+        fill_ratio = contour_area / bbox_area
+        if fill_ratio < min_fill_ratio:
+            continue
+
+        aspect = max(width, height) / float(max(1, min(width, height)))
+        if aspect > max_aspect:
+            continue
+
+        confidence = _red_cup_score(contour_area, min_area_px, fill_ratio)
+        detection  = DetectedObject(
+            class_name="red_cup",
+            confidence=confidence,
+            x=int(x),
+            y=int(y),
+            width=int(width),
+            height=int(height),
+        )
+        detection.add_attribute("color", "red", 1.0)
+        detections.append(detection)
+        debug_overlays.append(
+            DebugOverlay(
+                color=(0, 0, 200),
+                contour=contour,
+                label=f"red_cup {confidence:.2f}",
+                x=int(x),
+                y=int(y),
+            )
+        )
+
+    return detections, debug_overlays
+
+
+def _red_cup_score(contour_area: float, min_area_px: int, fill_ratio: float) -> float:
+    """Confidence in [0, 1] from area and fill compactness."""
+    area_score = min(1.0, contour_area / float(max(1, min_area_px * 5)))
+    fill_score = max(0.0, min(1.0, fill_ratio))
+    return max(0.0, min(1.0, 0.60 * area_score + 0.40 * fill_score))

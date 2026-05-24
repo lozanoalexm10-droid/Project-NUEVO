@@ -70,7 +70,6 @@ from robot.tests.scripts._manipulator_config import (
     ARM_CARRY_ELBOW_DEG,
     ARM_CARRY_SHOULDER_DEG,
     ARM_GEOMETRY,
-    ARM_L1_MM,
     ARM_SEARCH_ELBOW_DEG,
     ARM_SEARCH_SHOULDER_DEG,
     ARM_SERVO_STEP_DEG,
@@ -81,7 +80,10 @@ from robot.tests.scripts._manipulator_config import (
     CAMPAN_SETTLE_S,
     CAMPAN_STEPPER,
     campan_deg_to_steps,
+    CAMERA_HEIGHT_MM,
     CAMERA_HFOV_DEG,
+    CUP_CLASS,
+    CUP_DIAMETER_MM,
     ELBOW_CHANNEL,
     ELBOW_SAFE_MAX,
     ELBOW_SAFE_MIN,
@@ -93,8 +95,11 @@ from robot.tests.scripts._manipulator_config import (
     HEATING_WIRE_MOTOR_ID,
     HEATING_WIRE_PWM_OFF,
     HEATING_WIRE_PWM_ON,
+    MALLOW_CUP_BEARING_MATCH_DEG,
     MARSHMALLOW_CLASS,
+    MARSHMALLOW_DIAMETER_MM,
     MARSHMALLOW_HEIGHT_MM,
+    MIN_CONFIDENCE_CUP,
     MIN_CONFIDENCE_MARSHMALLOW,
     PLATE_X_MM,
     PLATE_Y_MM,
@@ -105,6 +110,7 @@ from robot.tests.scripts._manipulator_config import (
     SHOULDER_SAFE_MAX,
     SHOULDER_SAFE_MIN,
     SHOULDER_STOW_DEG,
+    snap_to_cup_tier_mm,
     STOP_SIGN_DWELL_S,
     TURNTABLE_ACCELERATION,
     TURNTABLE_HOME_OFFSET_DEG,
@@ -115,7 +121,6 @@ from robot.tests.scripts._manipulator_config import (
     TURNTABLE_STEPPER,
     turntable_deg_to_steps,
     ULTRASONIC_FOREARM_OFFSET_MM,
-    ULTRASONIC_HEIGHT_OFFSET_MM,
 )
 from robot.util import densify_polyline
 
@@ -142,8 +147,8 @@ OBSTACLE_FIELD_X_OFFSET = 1565.0  # x_L parameter for lane-switch avoidance
 POST_OBSTACLE_PATH = [
     (1565.0, 3660.0),
     (2530.0, 3660.0),
-    (2530.0, 610.0),
-    (2745.0, 305.0),   # stop sign position
+    (2533.0, 517.0),   # approach point: (2745-212, 305+212) → final leg is exactly 315°
+    (2745.0, 305.0),   # manipulator station — robot arrives facing 315° (-45°)
 ]
 
 
@@ -210,10 +215,28 @@ def _move_servo(robot: Robot, channel: int, current: float, target: float,
     return target
 
 
-def _turntable_to_deg(robot: Robot, target_deg: float) -> None:
+def _turntable_to_deg(robot: Robot, target_deg: float, home_offset_deg: float = TURNTABLE_HOME_OFFSET_DEG) -> None:
     target_deg = max(TURNTABLE_MIN_DEG, min(TURNTABLE_MAX_DEG, target_deg))
-    steps = turntable_deg_to_steps(target_deg + TURNTABLE_HOME_OFFSET_DEG)
+    steps = turntable_deg_to_steps(target_deg + home_offset_deg)
     robot.step_move(TURNTABLE_STEPPER, steps, StepMoveType.ABSOLUTE)
+
+
+def _home_turntable(robot: Robot) -> float:
+    """Home turntable CCW against LIM1 (stow position). Returns home_offset_deg."""
+    print("[HOME] Homing turntable CCW to stow (LIM1)...")
+    success = robot.step_home(
+        TURNTABLE_STEPPER,
+        direction=-1,
+        home_velocity=300,
+        backoff_steps=50,
+        timeout=15.0,
+    )
+    if success:
+        print("[HOME] Turntable homed. Stow = firmware step 0.")
+        return -TURNTABLE_MAX_DEG
+    print("[HOME] WARNING: turntable homing timed out — LIM1 may not be wired. "
+          "Continuing with manual alignment (offset=0.0).")
+    return 0.0
 
 
 def _campan_to_deg(robot: Robot, target_deg: float) -> None:
@@ -226,6 +249,37 @@ def _detection_bearing_deg(det: dict, img_w: int) -> float:
     cx = bbox["x"] + bbox["width"] / 2.0
     norm_x = cx / img_w if img_w > 0 else 0.5
     return (norm_x - 0.5) * CAMERA_HFOV_DEG
+
+
+def _detection_dist_mm(det: dict, img_w: int) -> float:
+    """Pinhole distance estimate from camera to marshmallow centre (mm)."""
+    bbox = det["bbox"]
+    px_diam = math.sqrt(max(1.0, bbox["width"] * bbox["height"]))
+    focal_px = (img_w / 2.0) / math.tan(math.radians(CAMERA_HFOV_DEG / 2.0))
+    return (MARSHMALLOW_DIAMETER_MM * focal_px) / px_diam
+
+
+def _cup_dist_mm(det: dict, img_w: int) -> float:
+    """Pinhole distance from camera to cup center using cup diameter (mm).
+
+    Uses bbox width (cup's lateral extent) rather than geometric mean, since
+    the cup's known physical diameter is its horizontal dimension from front view.
+    """
+    bbox = det["bbox"]
+    px_width = max(1.0, float(bbox["width"]))
+    focal_px = (img_w / 2.0) / math.tan(math.radians(CAMERA_HFOV_DEG / 2.0))
+    return (CUP_DIAMETER_MM * focal_px) / px_width
+
+
+def _detection_height_mm(det: dict, img_w: int, img_h: int, dist_mm: float) -> float:
+    """Estimate marshmallow centre height above robot base plate (mm)."""
+    bbox = det["bbox"]
+    cy = bbox["y"] + bbox["height"] / 2.0
+    hfov_rad = math.radians(CAMERA_HFOV_DEG)
+    vfov_rad = 2.0 * math.atan(math.tan(hfov_rad / 2.0) * img_h / img_w)
+    elevation_deg = -((cy - img_h / 2.0) / img_h) * math.degrees(vfov_rad)
+    h = CAMERA_HEIGHT_MM + dist_mm * math.tan(math.radians(elevation_deg))
+    return max(0.0, min(500.0, h))
 
 
 def _get_ultrasonic_mm(robot: Robot) -> float:
@@ -253,12 +307,13 @@ def _find_traffic_light_color(robot: Robot) -> str | None:
     return best_color
 
 
-def _restow(robot: Robot, shoulder_pos: float, elbow_pos: float, gripper_pos: float) -> None:
+def _restow(robot: Robot, shoulder_pos: float, elbow_pos: float, gripper_pos: float,
+            home_offset_deg: float = TURNTABLE_HOME_OFFSET_DEG) -> None:
     print("[FSM] RESTOWING — folding arm to stow position.")
     elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    ELBOW_STOW_DEG,    ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
     shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, SHOULDER_STOW_DEG, SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
     _campan_to_deg(robot, 0.0)
-    _turntable_to_deg(robot, TURNTABLE_MAX_DEG)
+    _turntable_to_deg(robot, TURNTABLE_MAX_DEG, home_offset_deg)
     _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_CLOSE_DEG)
     robot.disable_servo(ELBOW_CHANNEL)
     robot.disable_servo(SHOULDER_CHANNEL)
@@ -281,9 +336,14 @@ def run(robot: Robot) -> None:  # noqa: C901
     elbow_pos:    float = ELBOW_STOW_DEG
     gripper_pos:  float = GRIPPER_CLOSE_DEG
 
-    arm_turntable_deg: float = 0.0
-    arm_shoulder_deg:  float = SHOULDER_STOW_DEG
-    arm_elbow_deg:     float = ELBOW_STOW_DEG
+    arm_turntable_deg:   float = 0.0
+    arm_shoulder_deg:    float = SHOULDER_STOW_DEG
+    arm_elbow_deg:       float = ELBOW_STOW_DEG
+    stop_sign_seen:      bool  = False   # True once stop sign triggers; prevents re-pause
+    stop_sign_pause_t:   float = 0.0     # monotonic time when pause began
+    mallow_height_est:   float = MARSHMALLOW_HEIGHT_MM  # updated by SCANNING from vision
+    mallow_dist_est:     float = 300.0                  # updated by SCANNING from cup pinhole (mm)
+    turntable_home_offset: float = TURNTABLE_HOME_OFFSET_DEG  # set by _home_turntable()
 
     while True:
 
@@ -370,47 +430,41 @@ def run(robot: Robot) -> None:  # noqa: C901
                 state_entry_time = time.monotonic()
 
         # ── MOVING_POST_OBSTACLE ──────────────────────────────────────────────
+        # Detect stop sign at any point during this segment.  On first detection:
+        # hold stopped for STOP_SIGN_DWELL_S seconds (red LED), then resume nav.
+        # stop_sign_seen prevents the pause from re-triggering after it completes.
         elif state == "MOVING_POST_OBSTACLE":
-            robot.set_led(LED.GREEN, 255)
-            robot.set_led(LED.ORANGE, 0)
-
-            # Stop sign detected mid-segment: override nav and stop immediately.
-            if robot.get_detections("stop sign"):
-                robot.stop()
-                print("[FSM] Stop sign detected mid-route — stopping early.")
-                state = "AT_STOP_SIGN"
-                state_entry_time = time.monotonic()
-            elif robot.get_button(Button.BTN_2):
+            if robot.get_button(Button.BTN_2):
                 robot.stop()
                 robot.shutdown()
                 return
+
+            if stop_sign_seen and stop_sign_pause_t > 0.0:
+                # currently in the 3-second hold
+                robot.stop()
+                robot.set_led(LED.RED, 255)
+                robot.set_led(LED.GREEN, 0)
+                if time.monotonic() - stop_sign_pause_t >= STOP_SIGN_DWELL_S:
+                    print("[FSM] Stop sign dwell complete — resuming post-obstacle path.")
+                    stop_sign_pause_t = 0.0   # clear pause; nav resumes next tick
+                    robot.set_led(LED.RED, 0)
+                    robot.set_led(LED.GREEN, 255)
+            elif not stop_sign_seen and robot.get_detections("stop sign"):
+                # first detection — begin pause
+                robot.stop()
+                stop_sign_seen    = True
+                stop_sign_pause_t = time.monotonic()
+                robot.set_led(LED.RED, 255)
+                robot.set_led(LED.GREEN, 0)
+                print("[FSM] Stop sign detected — pausing 3s.")
             else:
+                # normal driving
+                robot.set_led(LED.GREEN, 255)
+                robot.set_led(LED.ORANGE, 0)
                 nav_state = robot._nav_follow_pp_path_loop()
                 if nav_state == "IDLE":
-                    print("[FSM] Post-obstacle nav done — at stop sign position.")
+                    print("[FSM] Post-obstacle segment done — at manipulator station.")
                     robot.stop()
-                    state = "AT_STOP_SIGN"
-                    state_entry_time = time.monotonic()
-
-        # ── AT_STOP_SIGN ──────────────────────────────────────────────────────
-        # Mandatory stop. Hold red LED. After STOP_SIGN_DWELL_S:
-        #   - if vision sees stop sign gone → auto-advance
-        #   - BTN_1 manual override → advance regardless
-        # This handles both "stop sign is removed" and "no vision coverage" cases.
-        elif state == "AT_STOP_SIGN":
-            robot.stop()
-            robot.set_led(LED.RED, 255)
-            robot.set_led(LED.GREEN, 0)
-            robot.set_led(LED.ORANGE, 0)
-
-            elapsed = time.monotonic() - state_entry_time
-            if elapsed >= STOP_SIGN_DWELL_S:
-                sign_still_visible = bool(robot.get_detections("stop sign"))
-                if not sign_still_visible or robot.get_button(Button.BTN_1):
-                    reason = "stop sign gone" if not sign_still_visible else "BTN_1 override"
-                    print(f"[FSM] Stop sign clear ({reason}) — homing arm.")
-                    robot.set_led(LED.RED, 0)
-                    robot.set_led(LED.ORANGE, 255)
                     state = "ARM_HOME"
                     state_entry_time = time.monotonic()
 
@@ -422,7 +476,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             robot.step_set_config(TURNTABLE_STEPPER, TURNTABLE_MAX_VELOCITY, TURNTABLE_ACCELERATION)
             robot.step_enable(CAMPAN_STEPPER)
             robot.step_set_config(CAMPAN_STEPPER, CAMPAN_MAX_VELOCITY, CAMPAN_ACCELERATION)
-            print("[FSM] ARM_HOME — align turntable and camera pan to forward marks before run.")
+            turntable_home_offset = _home_turntable(robot)
             robot.enable_servo(SHOULDER_CHANNEL)
             robot.enable_servo(ELBOW_CHANNEL)
             robot.enable_servo(GRIPPER_CHANNEL)
@@ -437,117 +491,157 @@ def run(robot: Robot) -> None:  # noqa: C901
             state_entry_time = time.monotonic()
 
         # ── SCANNING ──────────────────────────────────────────────────────────
-        # Pan camera through 3 windows (CAMPAN_POSITIONS_DEG) to cover ±90° arc.
-        # Collect all confident marshmallow hits across all frames, pick the best
-        # (highest confidence). World bearing = cam_pan_deg + pixel_bearing.
+        # Cup-first: pan camera through 3 windows, detect red cups + marshmallows.
+        # For each cup, look for a mallow within MALLOW_CUP_BEARING_MATCH_DEG —
+        # confirmed pair becomes a candidate. Unmatched cups are skipped (tennis
+        # ball or false case). Falls back to direct mallow detection if no pairs.
         elif state == "SCANNING":
             robot.set_led(LED.GREEN, 255)
             robot.set_led(LED.ORANGE, 0)
             if robot.get_button(Button.BTN_2):
-                _restow(robot, shoulder_pos, elbow_pos, gripper_pos)
+                _restow(robot, shoulder_pos, elbow_pos, gripper_pos, turntable_home_offset)
                 robot.shutdown()
                 return
             if time.monotonic() - state_entry_time > SCAN_TIMEOUT_S:
-                print(f"[FSM] SCANNING — {SCAN_TIMEOUT_S:.0f}s timeout, no marshmallow. Restowing.")
+                print(f"[FSM] SCANNING — {SCAN_TIMEOUT_S:.0f}s timeout, no target. Restowing.")
                 state = "RESTOWING"
                 state_entry_time = time.monotonic()
             else:
-                img_w, _ = robot.get_detection_image_size()
-                all_hits: list[dict] = []
+                img_w, img_h = robot.get_detection_image_size()
+                cup_mallow_hits:      list[dict] = []
+                fallback_mallow_hits: list[dict] = []
+
                 for pan_deg in CAMPAN_POSITIONS_DEG:
                     _campan_to_deg(robot, pan_deg)
                     time.sleep(CAMPAN_SETTLE_S)
-                    for det in robot.get_detections(MARSHMALLOW_CLASS):
-                        if float(det["confidence"]) < MIN_CONFIDENCE_MARSHMALLOW:
+                    cup_dets    = robot.get_detections(CUP_CLASS)
+                    mallow_dets = robot.get_detections(MARSHMALLOW_CLASS)
+
+                    for cup in cup_dets:
+                        if float(cup["confidence"]) < MIN_CONFIDENCE_CUP:
                             continue
-                        pixel_bearing_deg = _detection_bearing_deg(det, img_w)
-                        world_bearing_deg = pan_deg + pixel_bearing_deg
-                        all_hits.append({"det": det, "bearing_deg": world_bearing_deg})
+                        cup_pixel_bearing = _detection_bearing_deg(cup, img_w)
+                        cup_world_bearing = pan_deg + cup_pixel_bearing
+                        if not (-TURNTABLE_SCAN_ARC_DEG <= cup_world_bearing <= TURNTABLE_SCAN_ARC_DEG):
+                            continue
+                        cup_dist = _cup_dist_mm(cup, img_w)
 
-                _campan_to_deg(robot, 0.0)   # return camera to center
+                        best_m_conf   = 0.0
+                        best_m_height = None
+                        for mallow in mallow_dets:
+                            if float(mallow["confidence"]) < MIN_CONFIDENCE_MARSHMALLOW:
+                                continue
+                            if abs(_detection_bearing_deg(mallow, img_w) - cup_pixel_bearing) <= MALLOW_CUP_BEARING_MATCH_DEG:
+                                m_conf = float(mallow["confidence"])
+                                if m_conf > best_m_conf:
+                                    best_m_conf   = m_conf
+                                    best_m_height = snap_to_cup_tier_mm(
+                                        _detection_height_mm(mallow, img_w, img_h, cup_dist)
+                                    )
 
-                if all_hits:
-                    best = max(all_hits, key=lambda h: float(h["det"]["confidence"]))
-                    t_deg = best["bearing_deg"]
-                    if not (-TURNTABLE_SCAN_ARC_DEG <= t_deg <= TURNTABLE_SCAN_ARC_DEG):
-                        print(f"[FSM] SCANNING — best hit at {t_deg:.1f}° outside ±{TURNTABLE_SCAN_ARC_DEG:.0f}° scan zone, ignoring.")
-                    else:
-                        arm_turntable_deg = t_deg
-                        print(f"[FSM] SCANNING — marshmallow at {t_deg:.1f}° "
-                              f"(conf={best['det']['confidence']:.2f}, {len(all_hits)} hits across frames)")
-                        state = "RANGING"
-                        state_entry_time = time.monotonic()
+                        if best_m_height is not None:
+                            cup_mallow_hits.append({
+                                "bearing_deg": cup_world_bearing,
+                                "dist_mm":     cup_dist,
+                                "height_mm":   best_m_height,
+                                "conf":        best_m_conf,
+                            })
+
+                    for mallow in mallow_dets:
+                        if float(mallow["confidence"]) < MIN_CONFIDENCE_MARSHMALLOW:
+                            continue
+                        m_pixel_bearing = _detection_bearing_deg(mallow, img_w)
+                        m_world_bearing = pan_deg + m_pixel_bearing
+                        if not (-TURNTABLE_SCAN_ARC_DEG <= m_world_bearing <= TURNTABLE_SCAN_ARC_DEG):
+                            continue
+                        m_dist   = _detection_dist_mm(mallow, img_w)
+                        m_height = snap_to_cup_tier_mm(_detection_height_mm(mallow, img_w, img_h, m_dist))
+                        fallback_mallow_hits.append({
+                            "bearing_deg": m_world_bearing,
+                            "dist_mm":     m_dist,
+                            "height_mm":   m_height,
+                            "conf":        float(mallow["confidence"]),
+                        })
+
+                _campan_to_deg(robot, 0.0)
+
+                hits   = cup_mallow_hits if cup_mallow_hits else fallback_mallow_hits
+                source = "cup+mallow" if cup_mallow_hits else "mallow-only"
+                if hits:
+                    best = max(hits, key=lambda h: h["conf"])
+                    arm_turntable_deg = best["bearing_deg"]
+                    mallow_dist_est   = best["dist_mm"]
+                    mallow_height_est = best["height_mm"]
+                    print(
+                        f"[FSM] SCANNING ({source}) — target at {arm_turntable_deg:.1f}°  "
+                        f"dist={mallow_dist_est:.0f}mm  height={mallow_height_est:.0f}mm  "
+                        f"conf={best['conf']:.2f}"
+                    )
+                    state = "RANGING"
+                    state_entry_time = time.monotonic()
 
         # ── RANGING ───────────────────────────────────────────────────────────
-        # Rotate turntable to marshmallow bearing. Extend arm so the forearm is
-        # horizontal with the ultrasonic sensor aimed at marshmallow height.
-        # Measure distance, correct for height offset, run IK for pick position.
+        # Rotate turntable to bearing. Arm stays in search pose — no movement.
+        # US reading is FK-corrected for the forearm's elevation angle to get
+        # accurate horizontal reach. mallow_height_est (snapped tier) is always
+        # used for z since it is more reliable than the US vertical component.
+        # Falls back to camera distance if US is unavailable or out of range.
         elif state == "RANGING":
             if robot.get_button(Button.BTN_2):
-                _restow(robot, shoulder_pos, elbow_pos, gripper_pos)
+                _restow(robot, shoulder_pos, elbow_pos, gripper_pos, turntable_home_offset)
                 robot.shutdown()
                 return
 
-            print(f"[FSM] RANGING — rotating turntable to {arm_turntable_deg:.1f}°")
-            _turntable_to_deg(robot, arm_turntable_deg)
+            print(f"[FSM] RANGING — turntable to {arm_turntable_deg:.1f}°, "
+                  f"camera dist={mallow_dist_est:.0f}mm height={mallow_height_est:.0f}mm")
+            _turntable_to_deg(robot, arm_turntable_deg, turntable_home_offset)
+            time.sleep(0.2)
 
-            sensor_target_h = MARSHMALLOW_HEIGHT_MM - ULTRASONIC_HEIGHT_OFFSET_MM
-            sin_arg = (sensor_target_h - ARM_GEOMETRY.shoulder_height_mm) / ARM_L1_MM
-            sin_arg = max(-1.0, min(1.0, sin_arg))
-            ranging_shoulder_geo = math.degrees(math.asin(sin_arg))
-            ranging_elbow_geo    = ranging_shoulder_geo + 180.0
-
-            ranging_shoulder_srv = ARM_GEOMETRY.shoulder_geo_to_servo(ranging_shoulder_geo)
-            ranging_elbow_srv    = ARM_GEOMETRY.elbow_geo_to_servo(ranging_elbow_geo)
-            ranging_shoulder_srv = max(SHOULDER_SAFE_MIN, min(SHOULDER_SAFE_MAX, ranging_shoulder_srv))
-            ranging_elbow_srv    = max(ELBOW_SAFE_MIN,    min(ELBOW_SAFE_MAX,    ranging_elbow_srv))
-
-            print(f"[FSM] RANGING — shoulder_geo={ranging_shoulder_geo:.1f}° srv={ranging_shoulder_srv:.1f}°  "
-                  f"elbow_geo={ranging_elbow_geo:.1f}° srv={ranging_elbow_srv:.1f}°")
-            shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, ranging_shoulder_srv,
-                                       SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
-            elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    ranging_elbow_srv,
-                                       ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
-            time.sleep(0.3)
+            # Camera-based estimate is the default; US overwrites x/y if plausible.
+            bearing_rad = math.radians(arm_turntable_deg)
+            mallow_x = ARM_GEOMETRY.camera_forward_offset_mm + mallow_dist_est * math.cos(bearing_rad)
+            mallow_y = mallow_dist_est * math.sin(bearing_rad)
+            mallow_z = mallow_height_est
 
             try:
-                d_raw_mm = _get_ultrasonic_mm(robot)
-            except NotImplementedError as exc:
-                print(f"[FSM] RANGING — {exc}")
+                d_raw = _get_ultrasonic_mm(robot)
+                if 20.0 < d_raw < 800.0:
+                    # Convert current servo angles to forearm elevation angle.
+                    sh_geo     = ARM_GEOMETRY.shoulder_servo_to_geo(shoulder_pos)
+                    el_geo     = ARM_GEOMETRY.elbow_servo_to_geo(elbow_pos)
+                    sh_rad     = math.radians(sh_geo)
+                    el_rad     = math.radians(el_geo)
+                    forearm_rad = sh_rad + (math.pi - el_rad)
+
+                    # Horizontal position of the US sensor from the turntable axis.
+                    elbow_horiz  = ARM_GEOMETRY.L1 * math.cos(sh_rad)
+                    sensor_horiz = (ARM_GEOMETRY.shoulder_offset_mm + elbow_horiz
+                                    + ULTRASONIC_FOREARM_OFFSET_MM * math.cos(forearm_rad))
+
+                    # Project US reading onto horizontal axis.
+                    mallow_reach = sensor_horiz + d_raw * math.cos(forearm_rad)
+                    mallow_x = mallow_reach * math.cos(bearing_rad)
+                    mallow_y = mallow_reach * math.sin(bearing_rad)
+                    print(f"[FSM] RANGING — US={d_raw:.0f}mm forearm={math.degrees(forearm_rad):.1f}° "
+                          f"→ reach={mallow_reach:.0f}mm")
+                else:
+                    print(f"[FSM] RANGING — US={d_raw:.0f}mm out of plausible range, using camera estimate.")
+            except RuntimeError as exc:
+                print(f"[FSM] RANGING — US unavailable ({exc}), using camera estimate.")
+
+            try:
+                _, sh_srv, el_srv = inverse_kinematics(mallow_x, mallow_y, mallow_z, ARM_GEOMETRY)
+            except OutOfReachError as e:
+                print(f"[FSM] RANGING — IK out of reach: {e}. Restowing.")
                 state = "RESTOWING"
                 state_entry_time = time.monotonic()
             else:
-                sensor_horiz = (
-                    ARM_GEOMETRY.shoulder_offset_mm
-                    + ARM_L1_MM * math.cos(math.radians(ranging_shoulder_geo))
-                    + ULTRASONIC_FOREARM_OFFSET_MM
-                )
-                actual_sensor_h = (
-                    ARM_GEOMETRY.shoulder_height_mm
-                    + ARM_L1_MM * math.sin(math.radians(ranging_shoulder_geo))
-                    + ULTRASONIC_HEIGHT_OFFSET_MM
-                )
-                delta_h = MARSHMALLOW_HEIGHT_MM - actual_sensor_h
-                d_horizontal = math.sqrt(max(0.0, d_raw_mm ** 2 - delta_h ** 2))
-                mallow_reach = sensor_horiz + d_horizontal
-                mallow_x = mallow_reach * math.cos(math.radians(arm_turntable_deg))
-                mallow_y = mallow_reach * math.sin(math.radians(arm_turntable_deg))
-                mallow_z = MARSHMALLOW_HEIGHT_MM
-                print(f"[FSM] RANGING — ultrasonic={d_raw_mm:.0f} mm  horizontal={d_horizontal:.0f} mm  "
-                      f"reach={mallow_reach:.0f} mm  target=({mallow_x:.0f}, {mallow_y:.0f}, {mallow_z:.0f})")
-
-                try:
-                    _, sh_srv, el_srv = inverse_kinematics(mallow_x, mallow_y, mallow_z, ARM_GEOMETRY)
-                except OutOfReachError as e:
-                    print(f"[FSM] RANGING — IK out of reach: {e}. Restowing.")
-                    state = "RESTOWING"
-                    state_entry_time = time.monotonic()
-                else:
-                    arm_shoulder_deg = sh_srv
-                    arm_elbow_deg    = el_srv
-                    print(f"[FSM] RANGING — pick IK: shoulder={sh_srv:.1f}° elbow={el_srv:.1f}°")
-                    state = "APPROACHING"
-                    state_entry_time = time.monotonic()
+                arm_shoulder_deg = sh_srv
+                arm_elbow_deg    = el_srv
+                print(f"[FSM] RANGING — target=({mallow_x:.0f},{mallow_y:.0f},{mallow_z:.0f}) → "
+                      f"shoulder={sh_srv:.1f}° elbow={el_srv:.1f}°")
+                state = "APPROACHING"
+                state_entry_time = time.monotonic()
 
         # ── APPROACHING ───────────────────────────────────────────────────────
         elif state == "APPROACHING":
@@ -587,7 +681,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                                            SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
                 elbow_pos    = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, ARM_CARRY_ELBOW_DEG,
                                            ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
-                _turntable_to_deg(robot, plate_t_deg)
+                _turntable_to_deg(robot, plate_t_deg, turntable_home_offset)
                 shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, plate_sh,
                                            SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
                 elbow_pos    = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, plate_el,
@@ -620,7 +714,7 @@ def run(robot: Robot) -> None:  # noqa: C901
 
         # ── RESTOWING ─────────────────────────────────────────────────────────
         elif state == "RESTOWING":
-            _restow(robot, shoulder_pos, elbow_pos, gripper_pos)
+            _restow(robot, shoulder_pos, elbow_pos, gripper_pos, turntable_home_offset)
             print("[FSM] Demo complete.")
             state = "DONE"
             state_entry_time = time.monotonic()
