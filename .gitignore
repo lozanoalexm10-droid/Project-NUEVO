@@ -14,6 +14,7 @@ plugins/
 openspec/
 CLAUDE.md
 AGENTS.md
+*PLAN.md
 
 # ============================================
 # ROS2 Workspace

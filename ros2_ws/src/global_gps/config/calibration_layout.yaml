@@ -1,0 +1,30 @@
+# World-frame coordinates of the four calibration tags, in metres.
+# Tags do NOT need to be coplanar with the ground; any known (x, y, z)
+# layout is fine, and a non-coplanar layout (varying z) is preferred for
+# best calibration conditioning.
+# The user defines the world frame however they like (e.g. tag 0 at
+# origin, +X toward tag 1, +Y toward tag 2). Whatever convention is
+# chosen here is what downstream rover poses will be expressed in.
+calibration_tags:
+  0: [0.6096,  1.524, 0.00]
+  1: [1.8288, 1.524, 0.00]
+  2: [0.6096, 2.7432, 0.00]
+  3: [1.8288, 2.7432, 0.00]
+
+#0: [0.3048, 5*0.3048, 0.00]
+#1: [5*0.3048, 5*0.3048, 0.00]
+#2: [0.3048, 9*0.3048, 0.00]
+#3: [5*0.3048, 9*0.3048, 0.00]
+
+#calibration_tags:
+#  0: [0.000, 0.000, 0.00]
+#  1: [2.400, 0.000, 0.05]
+#  2: [0.000, 1.800, 0.30]
+#  3: [2.400, 1.800, 0.35]
+
+# Optional: ground plane in world frame. Used to project rover-tag
+# tvecs onto the floor before reporting (x, y) detections. Default if
+# the block is omitted: point=(0,0,0), normal=(0,0,1) — i.e. world z = 0.
+ground_plane:
+  point:  [0.0, 0.0, 0.0]
+  normal: [0.0, 0.0, 1.0]

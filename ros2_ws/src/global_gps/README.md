@@ -2,17 +2,23 @@
 
 Runs on the **Jetson Nano** (not on the robot RPis).
 
-Uses a RealSense D4xx camera mounted with a top-down view of the field to
-detect ArUco markers and publish 2-D world-frame positions for all rover robots
-simultaneously.
+Uses a RealSense D4xx camera (overhead or tripod-mounted at an oblique angle —
+see "Non-coplanar tags and the ground plane" below) to detect ArUco markers and
+publish 2-D world-frame positions for all rover robots simultaneously.
 
 ## How it works
 
 1. **Calibration**: On startup, the node waits until all four corner anchor
-   markers (IDs 0–3 by default) are visible at once. It fits a ground plane
-   through their 3-D positions and builds a world coordinate frame. Calibration
-   is automatic — just make sure the camera can see all four corners when the
-   node starts.
+   markers (IDs 0–3 by default) are visible at once. It then SVD-aligns the
+   four measured tag tvecs to the **known world-frame coordinates** that you
+   provided in `config/calibration_layout.yaml` (Kabsch / Umeyama with a
+   reflection guard). The ground plane in camera frame is derived
+   analytically as the image of the world `z = 0` plane. Calibration is
+   automatic — just make sure the camera can see all four corners when the
+   node starts. The most recent successful transform is cached to
+   `/runtime_output/global_gps/transform_cache.yaml` by default; if startup
+   cannot find enough localization markers within 30 seconds, the node logs a
+   warning and falls back to that cached transform.
 
 2. **Tracking**: Once calibrated, the node detects any rover markers (IDs 11–18
    by default) in every frame and publishes their 2-D poses (x, y, theta) on
@@ -30,8 +36,89 @@ simultaneously.
 | Rover markers | 11–18 | same size |
 
 Place corner markers at the four corners of the field with the **same physical
-size** as the rover markers. The world frame origin is placed at marker 0, with
-the X axis pointing toward marker 1 and the Y axis toward marker 2.
+size** as the rover markers. The world frame origin, axes, and units are
+defined entirely by what you write in `config/calibration_layout.yaml` — see
+the next section.
+
+## Tripod / oblique camera mounts
+
+The localizer works whether the RealSense is hung directly overhead or
+mounted on a **tripod looking down at an angle**. In the tripod case the
+ground plane is no longer trivially perpendicular to the camera, so the node
+recovers the world frame by SVD-aligning the four detected corner-tag
+positions to a layout you supply.
+
+### Filling in `calibration_layout.yaml`
+
+The packaged default lives at
+`ros2_ws/src/global_gps/config/calibration_layout.yaml`:
+
+```yaml
+# All values in metres. z = 0 because the four tags lie on the ground.
+calibration_tags:
+  0: [0.000, 0.000, 0.0]
+  1: [2.400, 0.000, 0.0]
+  2: [0.000, 1.800, 0.0]
+  3: [2.400, 1.800, 0.0]
+```
+
+Steps:
+
+1. Put down corner markers 0, 1, 2, 3 anywhere you like on the ground.
+2. Pick a world-frame convention. A typical choice: tag 0 at the origin,
+   `+X` toward tag 1, `+Y` toward tag 2.
+3. Measure the inter-tag distances by hand (tape measure) and fill in the
+   `(x, y, 0)` triple for each tag in your chosen frame.
+4. Either edit the packaged file directly, or write your own and pass
+   `calibration_layout_file:=/path/to/your.yaml` to the launch.
+
+Whatever convention you pick is what downstream rover poses are reported in.
+
+### Non-coplanar tags and the ground plane
+
+Calibration tags do **not** have to be coplanar with the floor — any
+known `(x, y, z)` layout works, and a layout where the four tags sit at
+visibly different heights (e.g. two on the floor, two on short stands)
+is in fact better-conditioned than a flat one because the depth axis is
+constrained directly. Because the tags can now sit anywhere in 3-D, the
+ground plane is specified independently in the world frame via an
+optional `ground_plane` block in `calibration_layout.yaml`:
+
+```yaml
+ground_plane:
+  point:  [0.0, 0.0, 0.0]
+  normal: [0.0, 0.0, 1.0]
+```
+
+If the block is omitted, the default is `point=(0,0,0)`,
+`normal=(0,0,1)` — i.e. world `z = 0`, which preserves prior behaviour
+for users whose tags lie flat on the floor. Rover tag tvecs are
+projected onto this plane before being reported as `(x, y)` detections.
+
+### RGB-only operation
+
+The localizer subscribes only to `/camera/camera/color/image_raw`. The
+RealSense depth stream is **no longer consumed** by this node — all
+geometry is recovered from the calibrated camera pose plus the
+configured ground plane. Other nodes that consume depth are unaffected.
+
+### Reading the calibration log line
+
+When calibration succeeds the node logs something like:
+
+```
+Calibration complete. Residuals max=4.1mm rms=2.7mm per-tag=[0:1.2mm, 1:3.8mm, 2:4.1mm, 3:2.0mm]
+```
+
+`max` is the worst per-tag fit error (Euclidean distance between the
+measured tvec and the SVD-predicted tvec). Rule of thumb:
+
+- **`max < 10 mm` (1 cm)** — healthy. Use as is.
+- 1–3 cm — usable but suspect; re-measure inter-tag distances or check that
+  the camera's intrinsic calibration is reasonable.
+- `> 3 cm` — bad. Likely causes: typo in the YAML, mis-placed corner
+  marker, very oblique tripod angle that pushes per-tag depth noise up, or
+  one of the four tags partially occluded.
 
 ## ROS topic
 
@@ -100,6 +187,36 @@ ros2 launch global_gps global_gps.launch.py \
     marker_size:=0.15 \
     corner_ids:=[0,1,2,3] \
     rover_ids:=[11,12,13]
+```
+
+The cache fallback can be configured explicitly:
+
+```bash
+ros2 launch global_gps global_gps.launch.py \
+    transform_cache_file:=/runtime_output/global_gps/transform_cache.yaml \
+    startup_cache_timeout_sec:=30.0
+```
+
+### Boot-time startup service
+
+This package now includes host-side startup assets:
+
+- `scripts/start_global_gps_stack.sh`
+- `systemd/global-gps-stack.service`
+
+The service template does the two required startup actions:
+
+1. `docker compose ... up -d --wait global_gps`
+2. `ros2 launch global_gps global_gps.launch.py`
+
+Because enabling `systemd` on the Jetson modifies host state outside
+`src/global_gps`, installation is still a manual host step. Copy or symlink
+the packaged `systemd/global-gps-stack.service` into `/etc/systemd/system/`,
+adjust `WorkingDirectory` if the repo lives elsewhere, then run:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now global-gps-stack.service
 ```
 
 ### Capture a photo of the camera's field of view

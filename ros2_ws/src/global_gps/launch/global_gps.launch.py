@@ -2,65 +2,86 @@
 Launch file for the Global GPS stack on the Jetson Nano.
 
 Starts:
-  1. realsense2_camera  — RealSense D4xx driver (colour + aligned depth)
+  1. realsense2_camera  — RealSense D4xx driver (colour or IR)
   2. ground_localizer   — ArUco field localizer, publishes /global_gps/tag_detections
 
 Usage (inside the Jetson Docker container):
     ros2 launch global_gps global_gps.launch.py
     ros2 launch global_gps global_gps.launch.py marker_size:=0.15 corner_ids:=[0,1,2,3]
+    ros2 launch global_gps global_gps.launch.py image_source:=infra1
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 
-def generate_launch_description() -> LaunchDescription:
-    # ── Launch arguments ──────────────────────────────────────────────────
-    marker_size_arg = DeclareLaunchArgument(
-        "marker_size",
-        default_value="0.10",
-        description="Physical side length of ArUco markers in metres.",
-    )
-    corner_ids_arg = DeclareLaunchArgument(
-        "corner_ids",
-        default_value="[0, 1, 2, 3]",
-        description="Marker IDs used as fixed field-corner anchors.",
-    )
-    rover_ids_arg = DeclareLaunchArgument(
-        "rover_ids",
-        default_value="[11, 12, 13, 14, 15, 16, 17, 18]",
-        description="Marker IDs that appear on rovers.",
-    )
-    tcp_port_arg = DeclareLaunchArgument(
-        "tcp_port",
-        default_value="7777",
-        description="TCP port for the robot push server (NAT-friendly delivery).",
-    )
+# image_source -> realsense flags + topic remappings + camera profile.
+#
+# Color  : RGB, 69° × 42° FOV.
+#   USB 2: max reliable profile is 1280x720x15.
+#   USB 3: 1920x1080x30 (higher resolution, same FOV).
+#
+# Infra1 : mono IR, 87° × 58° FOV (wider than color). IR projector disabled
+#   so its dot pattern doesn't confuse ArUco.
+#   USB 2: widest usable 16:9 mode is 848x480x10.
+#   USB 3: 1280x720x30 (full sensor resolution, full FOV, 3× frame rate).
+#
+# Use infra1 for maximum FOV; use color for a visible-light preview.
+# Profiles are set for USB 3. On USB 2 the driver will reject unsupported
+# modes — drop to 1280x720x15 (color) or 848x480x10 (infra1) if needed.
+_IMAGE_SOURCE_CONFIGS = {
+    "color": {
+        "rs_args": {
+            "enable_color": "true",
+            "enable_depth": "false",
+            "enable_infra1": "false",
+            "enable_infra2": "false",
+            "align_depth.enable": "false",
+            "rgb_camera.color_profile": "1920x1080x30",
+        },
+        "remappings": [
+            ("image_raw", "/camera/camera/color/image_raw"),
+            ("camera_info", "/camera/camera/color/camera_info"),
+        ],
+    },
+    "infra1": {
+        "rs_args": {
+            "enable_color": "false",
+            "enable_depth": "false",
+            "enable_infra1": "true",
+            "enable_infra2": "false",
+            "align_depth.enable": "false",
+            "depth_module.emitter_enabled": "0",
+            "depth_module.infra_profile": "1280x720x30",
+        },
+        "remappings": [
+            ("image_raw", "/camera/camera/infra1/image_rect_raw"),
+            ("camera_info", "/camera/camera/infra1/camera_info"),
+        ],
+    },
+}
 
-    # ── RealSense camera driver ───────────────────────────────────────────
+
+def _build_nodes(context, *args, **kwargs):
+    source = LaunchConfiguration("image_source").perform(context)
+    if source not in _IMAGE_SOURCE_CONFIGS:
+        raise ValueError(
+            f"image_source must be one of {list(_IMAGE_SOURCE_CONFIGS)}, got '{source}'"
+        )
+    cfg = _IMAGE_SOURCE_CONFIGS[source]
+
     realsense_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             get_package_share_directory("realsense2_camera"),
             "/launch/rs_launch.py",
         ]),
-        launch_arguments={
-            "enable_color": "true",
-            "enable_depth": "true",
-            "enable_infra1": "false",
-            "enable_infra2": "false",
-            # Align depth to colour frame so pixel coordinates match.
-            "align_depth.enable": "true",
-            # Publish at camera native rate (typically 30 Hz).
-            "rgb_camera.color_profile": "640x480x30",
-            "depth_module.depth_profile": "640x480x30",
-        }.items(),
+        launch_arguments=cfg["rs_args"].items(),
     )
 
-    # ── Ground localizer node ─────────────────────────────────────────────
     localizer_node = Node(
         package="global_gps",
         executable="ground_localizer",
@@ -71,14 +92,72 @@ def generate_launch_description() -> LaunchDescription:
             "corner_ids": LaunchConfiguration("corner_ids"),
             "rover_ids": LaunchConfiguration("rover_ids"),
             "tcp_port": LaunchConfiguration("tcp_port"),
+            "calibration_layout_file": LaunchConfiguration("calibration_layout_file"),
+            "transform_cache_file": LaunchConfiguration("transform_cache_file"),
+            "startup_cache_timeout_sec": LaunchConfiguration("startup_cache_timeout_sec"),
         }],
+        remappings=cfg["remappings"],
     )
 
+    return [realsense_launch, localizer_node]
+
+
+def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
-        marker_size_arg,
-        corner_ids_arg,
-        rover_ids_arg,
-        tcp_port_arg,
-        realsense_launch,
-        localizer_node,
+        DeclareLaunchArgument(
+            "marker_size",
+            default_value="0.10",
+            description="Physical side length of ArUco markers in metres.",
+        ),
+        DeclareLaunchArgument(
+            "corner_ids",
+            default_value="[0, 1, 2, 3]",
+            description="Marker IDs used as fixed field-corner anchors.",
+        ),
+        DeclareLaunchArgument(
+            "rover_ids",
+            default_value="[11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]",
+            description="Marker IDs that appear on rovers.",
+        ),
+        DeclareLaunchArgument(
+            "tcp_port",
+            default_value="7777",
+            description="TCP port for the robot push server (NAT-friendly delivery).",
+        ),
+        DeclareLaunchArgument(
+            "calibration_layout_file",
+            default_value="",
+            description=(
+                "Path to a YAML file with world-frame coordinates of the four "
+                "calibration tags. Empty -> use packaged default at "
+                "<global_gps share>/config/calibration_layout.yaml."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "image_source",
+            default_value="color",
+            choices=list(_IMAGE_SOURCE_CONFIGS),
+            description=(
+                "Which camera stream to feed the localizer. "
+                "'color' = RGB (69°×42° FOV); "
+                "'infra1' = left IR camera (87°×58° FOV, wider, IR emitter off)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "transform_cache_file",
+            default_value="/runtime_output/global_gps/transform_cache.yaml",
+            description=(
+                "Writable YAML file used to cache the most recent successful "
+                "world-from-camera transformation."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "startup_cache_timeout_sec",
+            default_value="30.0",
+            description=(
+                "Seconds to wait for live calibration markers on startup before "
+                "falling back to the cached transformation."
+            ),
+        ),
+        OpaqueFunction(function=_build_nodes),
     ])
