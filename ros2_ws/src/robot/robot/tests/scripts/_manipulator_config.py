@@ -76,7 +76,7 @@ CAMPAN_MICROSTEP        = 1               # no microstepping — DRV8825 M0/M1/M
 CAMPAN_PULLEY_RATIO     = 1.0             # direct drive — no belt or pulley
 CAMPAN_MAX_VELOCITY     = 200             # steps/sec (output shaft) — conservative for 28BYJ-48 low torque
 CAMPAN_ACCELERATION     = 100             # steps/sec² (output shaft)
-CAMPAN_POSITIONS_DEG    = [-45.0, 0.0, 45.0]   # left → center → right (CCW negative = left)
+CAMPAN_POSITIONS_DEG    = [-60.0, 0.0, 60.0]   # left → center → right (CCW negative = left)
 CAMPAN_SETTLE_S         = 0.3             # seconds to wait after panning before capturing
 
 STEPS_PER_CAMPAN_DEG = (CAMPAN_STEPS_PER_REV * CAMPAN_MICROSTEP * CAMPAN_PULLEY_RATIO) / 360.0

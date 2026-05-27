@@ -578,8 +578,7 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         self.avoidance_counter = 0
         self.avoidance_delay = avoidance_delay
 
-        # self.current_lane = 'Center'
-        self.current_lane = 'Left'
+        self.current_lane = 'Center'
 
     def set_path(self, path: list[tuple[float, float]]):
         self.raw_path = path.copy()
@@ -637,8 +636,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         # Step 1: Obtain current state: Obtain pose and obstacles in robot frame based on your lidar and robot configurations.
         x, y, theta = pose
         if len(obstacles_r) > 0:
-            # lidar orientation due to installation is 180 deg rotated from robot forward, so rotate obstacles accordingly.
-            obstacles_r = (np.array([[np.cos(-np.pi/2), -np.sin(-np.pi/2)], [np.sin(-np.pi/2), np.cos(-np.pi/2)]]) @ obstacles_r.T).T 
+            # lidar orientation due to installation is 0 deg rotated from robot forward, so rotate obstacles accordingly.
+            obstacles_r = (np.array([[np.cos(0), -np.sin(0)], [np.sin(0), np.cos(0)]]) @ obstacles_r.T).T 
             
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
             obstacles_r = obstacles_r[np.abs(np.arctan2(obstacles_r[:,1],obstacles_r[:,0])) <= self.view_angle,:] # only consider obstacles in front of the robot within 180 deg FOV, which can help prevent the robot from being too conservative by reacting to obstacles behind it that are not in its path.
@@ -683,24 +682,26 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
 
                 # Generate new waypoints based on the desired waypoints on the center lane.
                 if change_lane:
-                    self.remaining_path = []
-                    for i in range(len(self.raw_path)):
-                        x_, y_ = self.raw_path[i]
-                        if closest_pt[0] < self.x_L:
-                            self.remaining_path.append((x_+self.offset, y_))
-                            self.current_lane = 'Right'
-                        else:
-                            self.remaining_path.append((x_-self.offset, y_))
-                            self.current_lane = 'Left'
+                    dx = self.offset if closest_pt[0] < self.x_L else -self.offset
+                    self.current_lane = 'Right' if closest_pt[0] < self.x_L else 'Left'
                     print('Change Lane!!! Current lane is:', self.current_lane)
+
+                    # Smooth entry point: forward == lateral → ≤45° approach angle.
+                    # Only carry forward waypoints past this point so pure pursuit never
+                    # sees a target behind the robot (which causes a full pivot spin).
+                    smooth_y = y + abs(dx)
+                    ahead     = [(x_ + dx, y_) for x_, y_ in self.raw_path if y_ > smooth_y] \
+                                or [(self.raw_path[-1][0] + dx, self.raw_path[-1][1])]
+                    ahead_raw = [(x_, y_)       for x_, y_ in self.raw_path if y_ > smooth_y] \
+                                or [self.raw_path[-1]]
+                    self.remaining_path = [(x + dx, smooth_y)] + ahead
+                    self.raw_path       = [(x + dx, smooth_y)] + ahead_raw
+
                     if np.hypot(x-closest_pt[0], y-closest_pt[1]) < (self.safe_dist+self.obstacles_range)/2:
-                        print('Too Closed!!!')
-                        if self.current_lane == 'Right':
-                            self.remaining_path.insert(0, (x+self.offset, y+self.offset/2))
-                            self.raw_path.insert(0, (x+self.offset, y+self.offset))
-                        elif self.current_lane == 'Left':
-                            self.remaining_path.insert(0, (x-self.offset, y+self.offset/2))
-                            self.raw_path.insert(0, (x-self.offset, y+self.offset))
+                        print('Too Close!!!')
+                        # Immediate partial divert: half-offset, half-forward → still 45°
+                        self.remaining_path.insert(0, (x + dx * 0.5, y + abs(dx) * 0.5))
+                        self.raw_path.insert(0,       (x + dx * 0.5, y + abs(dx) * 0.5))
 
         if self.avoidance_counter > 0:
             self.avoidance_counter -= 1

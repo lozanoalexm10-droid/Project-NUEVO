@@ -84,7 +84,10 @@ def start_robot(robot: Robot) -> None:
     time.sleep(0.2)
 
     robot.reset_odometry()
-    robot.wait_for_pose_update(timeout=0.2)
+    if not robot.wait_for_odometry_reset(timeout=3.0):
+        print("[WARN] odometry reset not confirmed within 3s — pose may be stale")
+        robot.wait_for_pose_update(timeout=1.0)
+    print(f"[CONFIG] pose after reset: {robot.get_odometry_pose()}")
 
 
 def run(robot: Robot) -> None:
@@ -99,9 +102,8 @@ def run(robot: Robot) -> None:
             start_robot(robot)
             print("[FSM] INIT (odometry reset)")
             path_control_points = [
-                (610.0, 0.0),
-                (610.0, 2500.0),
-                (1300.0, 2500.0),
+                (0.0, 0.0),
+                (0.0, 2000.0),
             ]
             path = densify_polyline(path_control_points, spacing=400.0)
 
@@ -118,7 +120,7 @@ def run(robot: Robot) -> None:
                 offset=305.0,
                 lane_width=500.0,
                 obstacle_avoidance=True,
-                x_L=610.0,
+                x_L=0.0,
             )
             robot._set_obstacle_avoidance_path(path)
             print("Path is ready, entering IDLE state.")
@@ -127,13 +129,10 @@ def run(robot: Robot) -> None:
         elif state == "IDLE":
             show_idle_leds(robot)
             robot._draw_lidar_obstacles()
-            print("[FSM] IDLE - Press BTN_1 to enter MOVING state.")
-            if robot.get_button(Button.BTN_1):
-                print("Start moving.")
-                state = "MOVING"
-            elif robot.get_button(Button.BTN_2):
-                print("BTN_2 pressed. Stopping robot and saving trajectory.")
-                robot.shutdown()
+            print("[FSM] IDLE - Auto-starting in 3 seconds.")
+            time.sleep(3)
+            print("Start moving.")
+            state = "MOVING"
 
         elif state == "MOVING":
             show_moving_leds(robot)

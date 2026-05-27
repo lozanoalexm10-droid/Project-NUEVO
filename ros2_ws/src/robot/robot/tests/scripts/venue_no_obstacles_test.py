@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 from robot.hardware_map import (
@@ -83,17 +84,82 @@ def start_robot(robot: Robot) -> None:
     print(f"[CONFIG] pose after reset: {robot.get_odometry_pose()}")
 
 
-FULL_PATH = [
-    (0.0, 0.0),
-    (0.0, 1200.0),  # Switch y back to 3100.0
-    (610.0, 1200.0),# Swittch y back to 3100.0
-    (610.0, 610.0),
-    (1565.0, 610.0),
-    (1565.0, 3110.0),
-    (2530.0, 3110.0),
-    (2530.0, 610.0),
-    (2745.0, 305.0),
-]
+# ── Path geometry ─────────────────────────────────────────────────────────────
+#
+# Route:
+#   Lane 1 (x=0)    up   → top arc R=305  → Lane 2 (x=610) down
+#   → bottom arc R=457.5 (1.5 lanes) → middle of obstacle zone (x=1525) up
+#   → top arc R=457.5 (1.5 lanes)    → Lane 5 (x=2440) down to finish
+#
+# Obstacle zone (lanes 3+4 combined, x=1220–1830):
+#   Robot drives straight up the centerline (x=1525) in this test.
+#   When obstacle avoidance is added: enter at x=1525, pick a lane, avoid
+#   obstacles, return to x=1525 before the exit arc.
+#
+# Arc radii:
+#   R     = 305 mm  — single-lane (610 mm shift)
+#   R_OBS = 457.5 mm — 1.5-lane (915 mm shift), used for obstacle zone entry/exit
+#
+# Y stops:
+#   Y_TOP = 2950  — approach for top arcs (top wall at Y_MAX=3850, ~440 mm clearance)
+#   Y_BOT = 1220  — approach for bottom arc (bottom wall at 310, ~452 mm clearance)
+
+LANE_MM    = 610.0
+R          = LANE_MM / 2            # 305 mm
+R_OBS      = LANE_MM * 1.5 / 2      # 457.5 mm — 1.5-lane arc
+X_OBS_MID  = LANE_MM * 2.5          # 1525 mm — centerline between lanes 3 and 4
+Y_MAX      = 3850.0                 # top wall
+Y_MIN_WALL = 310.0                  # bottom wall
+Y_TOP      = 3050.0                 # approach for top arcs
+Y_BOT      = 1220.0                 # approach for bottom arc
+FINISH_Y   = 700.0                  # end of lane 5
+
+
+def _top_arc(x0: float, y0: float) -> list[tuple[float, float]]:
+    """R=305, +y → -y heading, +610 mm in x."""
+    return [
+        (x0 + R * (1 - math.cos(math.radians(d))),
+         y0 + R * math.sin(math.radians(d)))
+        for d in range(5, 181, 5)
+    ]
+
+
+def _top_arc_obs(x0: float, y0: float) -> list[tuple[float, float]]:
+    """R=457.5, +y → -y heading, +915 mm in x (1.5 lanes)."""
+    return [
+        (x0 + R_OBS * (1 - math.cos(math.radians(d))),
+         y0 + R_OBS * math.sin(math.radians(d)))
+        for d in range(5, 181, 5)
+    ]
+
+
+def _bot_arc_obs(x0: float, y0: float) -> list[tuple[float, float]]:
+    """R=457.5, -y → +y heading, +915 mm in x (1.5 lanes).
+    Entry arc: (610, Y_BOT) → (1525, Y_BOT), arc dips to (1067.5, Y_BOT-457.5).
+    """
+    return [
+        (x0 + R_OBS * (1 - math.cos(math.radians(d))),
+         y0 - R_OBS * math.sin(math.radians(d)))
+        for d in range(5, 181, 5)
+    ]
+
+
+FULL_PATH = (
+    # ── lane 1 up  (x = 0) ───────────────────────────────────────────────────
+    [(0.0, 0.0), (0.0, Y_TOP)]
+    + _top_arc(0.0, Y_TOP)                  # → (610, 2950), heading -y
+
+    # ── lane 2 down  (x = 610) ───────────────────────────────────────────────
+    + [(610.0, Y_BOT)]
+    + _bot_arc_obs(610.0, Y_BOT)            # → (1525, 1220), heading +y
+
+    # ── obstacle zone centerline up  (x = 1525) ──────────────────────────────
+    + [(X_OBS_MID, Y_TOP)]
+    + _top_arc_obs(X_OBS_MID, Y_TOP)        # → (2440, 2950), heading -y
+
+    # ── lane 5 down  (x = 2440) — final lane ─────────────────────────────────
+    + [(2440.0, FINISH_Y)]
+)
 
 
 def run(robot: Robot) -> None:
@@ -131,10 +197,10 @@ def run(robot: Robot) -> None:
             show_moving_leds(robot)
             robot.purepursuit_follow_path(
                 waypoints=path,
-                velocity=130.0,
-                lookahead=100.0,
+                velocity=125.0,
+                lookahead=150.0,
                 tolerance=20.0,
-                max_angular_rad_s=0.7,
+                max_angular_rad_s=1.5,
                 advance_radius=80.0,
                 blocking=True,
             )

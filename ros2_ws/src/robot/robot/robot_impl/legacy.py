@@ -102,8 +102,8 @@ class LegacyMixin:
         if obstacles_mm.size != 0:
             lidar_offset_mm = 100.0
             obstacles = (
-                np.array([[np.cos(np.pi), -np.sin(np.pi)],
-                          [np.sin(np.pi),  np.cos(np.pi)]]) @ obstacles_mm.T
+                np.array([[np.cos(0), -np.sin(0)],
+                          [np.sin(0),  np.cos(0)]]) @ obstacles_mm.T
             ).T + np.array([[lidar_offset_mm, 0]])
             obstacles = obstacles[obstacles[:, 0] > 0, :]
             obstacles = (
