@@ -686,10 +686,10 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                     self.current_lane = 'Right' if closest_pt[0] < self.x_L else 'Left'
                     print('Change Lane!!! Current lane is:', self.current_lane)
 
-                    # Smooth entry point: forward == lateral → ≤45° approach angle.
+                    # Smooth entry point: ~22° approach angle (forward = 2.5× lateral).
                     # Only carry forward waypoints past this point so pure pursuit never
                     # sees a target behind the robot (which causes a full pivot spin).
-                    smooth_y = y + abs(dx)
+                    smooth_y = y + abs(dx) * 2.5
                     ahead     = [(x_ + dx, y_) for x_, y_ in self.raw_path if y_ > smooth_y] \
                                 or [(self.raw_path[-1][0] + dx, self.raw_path[-1][1])]
                     ahead_raw = [(x_, y_)       for x_, y_ in self.raw_path if y_ > smooth_y] \
@@ -699,9 +699,9 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
 
                     if np.hypot(x-closest_pt[0], y-closest_pt[1]) < (self.safe_dist+self.obstacles_range)/2:
                         print('Too Close!!!')
-                        # Immediate partial divert: half-offset, half-forward → still 45°
-                        self.remaining_path.insert(0, (x + dx * 0.5, y + abs(dx) * 0.5))
-                        self.raw_path.insert(0,       (x + dx * 0.5, y + abs(dx) * 0.5))
+                        # Intermediate point at the same ~22° angle, halfway through the shift.
+                        self.remaining_path.insert(0, (x + dx * 0.5, y + abs(dx) * 1.25))
+                        self.raw_path.insert(0,       (x + dx * 0.5, y + abs(dx) * 1.25))
 
         if self.avoidance_counter > 0:
             self.avoidance_counter -= 1
