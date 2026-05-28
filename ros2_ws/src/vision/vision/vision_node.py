@@ -75,6 +75,7 @@ class VisionNode(Node):
         self.declare_parameter("model_path", str(model_default))
         self.declare_parameter("model_imgsz", 416)
         self.declare_parameter("confidence_threshold", 0.25)
+        self.declare_parameter("min_display_confidence", 0.7)
         self.declare_parameter("iou_threshold", 0.7)
         self.declare_parameter("max_detections", 20)
         self.declare_parameter("class_filter", DEFAULT_CLASS_FILTER)
@@ -96,6 +97,7 @@ class VisionNode(Node):
         self._process_rate_hz = float(self.get_parameter("process_rate_hz").value)
         self._model_imgsz = int(self.get_parameter("model_imgsz").value)
         self._confidence_threshold = float(self.get_parameter("confidence_threshold").value)
+        self._min_display_confidence = float(self.get_parameter("min_display_confidence").value)
         self._iou_threshold = float(self.get_parameter("iou_threshold").value)
         self._max_detections = int(self.get_parameter("max_detections").value)
         self._class_filter = str(self.get_parameter("class_filter").value)
@@ -246,6 +248,10 @@ class VisionNode(Node):
                     yolo_detections + yellow_block_detections
                     + marshmallow_detections + red_cup_detections
                 )
+                all_detections = [
+                    d for d in all_detections
+                    if d.confidence >= self._min_display_confidence
+                ]
 
                 message = self._build_detection_array_msg(
                     capture_stamp=capture_stamp,
@@ -257,7 +263,7 @@ class VisionNode(Node):
                 self._debug_writer.maybe_write(
                     frame_bgr=frame,
                     detected_objects=all_detections,
-                    debug_overlays=yellow_block_overlays + marshmallow_overlays + red_cup_overlays,
+                    debug_overlays=[],
                 )
                 yolo_count          = len(yolo_detections)
                 yellow_block_count  = len(yellow_block_detections)
