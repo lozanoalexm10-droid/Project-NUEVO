@@ -115,7 +115,7 @@ def run(robot: Robot) -> None:
                 obstacles_range=450.0,
                 view_angle=math.radians(70.0),
                 safe_dist=250.0,
-                avoidance_delay=200,
+                avoidance_delay=450, # Was 200, Switched to 450
                 alpha_Ld=1.3,
                 offset=250.0,
                 lane_width=500.0,
