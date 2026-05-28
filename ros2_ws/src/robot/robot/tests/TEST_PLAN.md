@@ -199,6 +199,37 @@ Drives the full venue path with obstacle avoidance disabled.
 
 ---
 
+### D2b — Venue No Obstacles — Wide-Arc Variant
+
+| Field  | Value |
+|---|---|
+| File   | `tests/scripts/venue_no_obstacles_wide_arc_test.py` |
+| Nodes  | bridge (auto) + everything_but_robot + robot |
+| Status | Ready — run after D2 passes |
+
+```python
+# main.py
+from robot.tests.scripts.venue_no_obstacles_wide_arc_test import run  # noqa: F401
+```
+
+**Same terminals as D1.**
+
+Tests wider elliptical U-turns made possible by the reduced 30 mm front omni-wheel axle footprint.
+**Place the robot 30 mm to the left of the lane-1 centreline** before starting — this becomes odometry (0, 0).
+
+Arc geometry vs D2:
+
+| Arc    | v1 Rx / Ry (mm) | wide Rx / Ry (mm) | Peak/dip → wall clearance |
+|--------|-----------------|-------------------|---------------------------|
+| Top 1  | 305 / 305       | 320 / 430         | 3580 mm → 270 mm clear    |
+| Bottom | 457.5 / 457.5   | 457.5 / 500       | 600 mm → 290 mm clear     |
+| Top 2  | 457.5 / 457.5   | 457.5 / 430       | 3580 mm → 270 mm clear    |
+
+**Pass:** All three U-turns complete without wall contact. Robot finishes centred on lane 5 at y ≈ 700 mm.
+If arcs overshoot toward walls, reduce `RY_ARC1`, `RY_BOT`, or `RY_ARC2` in the script by 20–30 mm at a time.
+
+---
+
 ### D3 — Full Venue Route (3 segments)
 
 | Field  | Value |
