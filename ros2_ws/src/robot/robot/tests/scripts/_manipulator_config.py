@@ -86,23 +86,27 @@ def campan_deg_to_steps(degrees: float) -> int:
 
 # ── Ultrasonic sensor ──────────────────────────────────────────────────────────
 # Mounted on the forearm. Measure from the physical robot and replace these values.
-ULTRASONIC_FOREARM_OFFSET_MM = 50.0    # TODO: distance from elbow pivot to sensor along forearm
-ULTRASONIC_HEIGHT_OFFSET_MM  = 0.0    # TODO: sensor height above forearm centerline (+ = above)
+ULTRASONIC_FOREARM_OFFSET_MM = 215.0    # TODO: distance from elbow pivot to sensor along forearm
+ULTRASONIC_HEIGHT_OFFSET_MM  = 29.0    # TODO: sensor height above forearm centerline (+ = above)
 
 # ── Arm geometry (measure from physical robot, all in mm) ─────────────────────
 # TODO: replace placeholder values with physical measurements before using IK.
-ARM_L1_MM               = 150.0    # upper arm: shoulder pivot → elbow pivot
-ARM_L2_MM               = 130.0    # forearm:   elbow pivot   → gripper center
-ARM_SHOULDER_HEIGHT_MM  = 120.0    # shoulder pivot height above robot base plate
-ARM_SHOULDER_OFFSET_MM  = 25.4     # forward distance from turntable axis to shoulder pivot (~1 inch — measure)
+ARM_L1_MM               = 156.0    # upper arm: shoulder pivot → elbow pivot
+ARM_L2_MM               = 304.0    # forearm:   elbow pivot   → gripper end where grabbing happens
+ARM_SHOULDER_HEIGHT_MM  = 95.0    # shoulder pivot height above robot base plate
+ARM_SHOULDER_OFFSET_MM  = 14.0    # forward distance from turntable axis to shoulder pivot (~1 inch — measure)
 
-# Distance from turntable rotation axis to the front face of the robot (mm).
-# The camera/campan axis lives roughly at this position (+x forward).
-# Used by detection_to_robot_frame() to translate camera distances into
-# turntable-axis coordinates for IK.  A marshmallow 6 in (152 mm) from the
-# robot front is 152 + ROBOT_FRONT_TO_TURNTABLE_MM from the turntable axis.
+# Distance from turntable rotation axis to the front face of the robot chassis (mm).
 # TODO: measure on physical robot (currently set to 4 in = 101.6 mm).
 ROBOT_FRONT_TO_TURNTABLE_MM = 101.6
+
+# How far the camera/campan axis sits forward of the front chassis face (mm).
+# camera_forward_offset_mm = ROBOT_FRONT_TO_TURNTABLE_MM + CAMERA_PROTRUSION_MM.
+# Used by detection_to_robot_frame() to translate camera distances into
+# turntable-axis coordinates for IK.  A marshmallow 6 in (152 mm) from the
+# camera is (152 + CAMERA_FORWARD_OFFSET_MM) from the turntable axis.
+CAMERA_PROTRUSION_MM        = 96.0
+CAMERA_FORWARD_OFFSET_MM    = ROBOT_FRONT_TO_TURNTABLE_MM + CAMERA_PROTRUSION_MM
 
 # Servo calibration — run arm_ik_calibration_test.py to determine these values.
 # shoulder_servo_offset: servo angle (deg) when upper arm is horizontal (geometric 0°)
@@ -124,7 +128,7 @@ ARM_GEOMETRY = ArmGeometry(
     shoulder_servo_sign      = SHOULDER_SERVO_SIGN,
     elbow_servo_offset       = ELBOW_SERVO_OFFSET,
     elbow_servo_sign         = ELBOW_SERVO_SIGN,
-    camera_forward_offset_mm = ROBOT_FRONT_TO_TURNTABLE_MM,
+    camera_forward_offset_mm = CAMERA_FORWARD_OFFSET_MM,
 )
 
 # ── Servo motion ─────────────────────────────────────────────────────────────
@@ -141,11 +145,12 @@ ARM_CARRY_ELBOW_DEG      = 90.0
 
 # ── Turntable home offset ─────────────────────────────────────────────────────
 # Firmware homing: step_home() sets position 0 at stow (LIM1 trigger = 180°).
-# All _turntable_to_deg() calls add this offset before converting to steps so that
-# our angle convention (0=forward, 180=stow) maps correctly onto the firmware counter.
-# After firmware homing: offset must be -TURNTABLE_MAX_DEG = -180.0.
-# Fallback (no limit switch / manual alignment to forward mark): offset = 0.0.
-TURNTABLE_HOME_OFFSET_DEG = -180.0   # set for firmware homing via LIM1
+# Direction convention: CW = positive firmware steps, CCW = negative.
+# Formula: firmware_steps = turntable_deg_to_steps(home_offset - target_deg)
+#   After firmware homing (stow = step 0): offset = +180  → forward(0°) = +3200 steps CW ✓
+#   Manual alignment at forward (forward = step 0): offset = 0   → forward(0°) = 0 steps ✓
+# NEVER use target+offset — that sends moves back into the limit switch.
+TURNTABLE_HOME_OFFSET_DEG = 171.0    # limit switch triggers 9° short of full stow (measured)
 
 # ── Target geometry (measure from competition venue, all mm, robot frame) ─────
 # Robot frame: x = forward, y = left, z = up; origin = turntable axis at base plate.
