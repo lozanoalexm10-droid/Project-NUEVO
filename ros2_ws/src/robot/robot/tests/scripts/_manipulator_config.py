@@ -93,7 +93,7 @@ ULTRASONIC_HEIGHT_OFFSET_MM  = 29.0    # TODO: sensor height above forearm cente
 # TODO: replace placeholder values with physical measurements before using IK.
 ARM_L1_MM               = 156.0    # upper arm: shoulder pivot → elbow pivot
 ARM_L2_MM               = 304.0    # forearm:   elbow pivot   → gripper end where grabbing happens
-ARM_SHOULDER_HEIGHT_MM  = 95.0    # shoulder pivot height above robot base plate
+ARM_SHOULDER_HEIGHT_MM  = 95.5    # shoulder pivot height above robot base plate (measured)
 ARM_SHOULDER_OFFSET_MM  = 14.0    # forward distance from turntable axis to shoulder pivot (~1 inch — measure)
 
 # Distance from turntable rotation axis to the front face of the robot chassis (mm).
@@ -154,6 +154,12 @@ TURNTABLE_HOME_OFFSET_DEG = 171.0    # limit switch triggers 9° short of full s
 
 # ── Target geometry (measure from competition venue, all mm, robot frame) ─────
 # Robot frame: x = forward, y = left, z = up; origin = turntable axis at base plate.
+#
+# Ground level: the competition floor sits 229 mm BELOW the robot base plate.
+# All absolute z heights must be expressed relative to the base plate (z = 0).
+# Floor surface = GROUND_Z_MM = -229 mm.  Objects on the floor have z < 0.
+GROUND_Z_MM              = -229.0  # floor surface in robot frame (measured)
+
 MARSHMALLOW_HEIGHT_MM    = 80.0     # fallback height — runtime uses vision estimate
 MARSHMALLOW_DISTANCE_MM  = 200.0   # TODO: measure horizontal distance from turntable axis
 # Plate is always 3 in (76.2 mm) forward of the robot front face.
@@ -161,7 +167,7 @@ MARSHMALLOW_DISTANCE_MM  = 200.0   # TODO: measure horizontal distance from turn
 # Plate center x = 76.2 + 101.6 = 177.8 mm from turntable axis.
 PLATE_X_MM               = 177.8   # 3 in forward of robot front (76.2 mm) + turntable offset (101.6 mm)
 PLATE_Y_MM               = 0.0     # plate is directly forward
-PLATE_Z_MM               = 15.0    # graham cracker on plate (~10 mm cracker + small clearance)
+PLATE_Z_MM               = GROUND_Z_MM + 15.0  # floor + graham cracker (~10 mm) + small clearance
 
 # ── Camera field of view ──────────────────────────────────────────────────────
 # Raspberry Pi Camera Module v2 with default lens: ~62° HFOV.
@@ -181,13 +187,15 @@ MARSHMALLOW_RADIUS_MM    = MARSHMALLOW_DIAMETER_MM / 2.0  # center-height above 
 
 # ── Red Solo cup height tiers ──────────────────────────────────────────────────
 # Standard red Solo cup: ~94mm tall. Marshmallow sits on top → center at +19mm above rim.
+# All heights are in robot frame (z relative to base plate). Cups sit on the floor
+# (GROUND_Z_MM = -229 mm), so all tiers are negative in the robot frame.
 # TODO: measure actual cup height and marshmallow diameter for your specific cups/marshmallows.
 CUP_SINGLE_HEIGHT_MM     = 94.0     # height of one Solo cup (mm)
-# Marshmallow center height above robot base plate for each stack height:
-MALLOW_HEIGHT_0_CUPS_MM  = MARSHMALLOW_RADIUS_MM                            # on plate (~19mm)
-MALLOW_HEIGHT_1_CUP_MM   = CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM    # ~113mm
-MALLOW_HEIGHT_2_CUPS_MM  = 2 * CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM # ~207mm
-MALLOW_HEIGHT_3_CUPS_MM  = 3 * CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM # ~301mm
+# Marshmallow centre z in robot frame (base plate = 0, floor = GROUND_Z_MM):
+MALLOW_HEIGHT_0_CUPS_MM  = GROUND_Z_MM + MARSHMALLOW_RADIUS_MM                            # floor + radius  ≈ -210 mm
+MALLOW_HEIGHT_1_CUP_MM   = GROUND_Z_MM + CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM    # 1 cup  ≈ -116 mm
+MALLOW_HEIGHT_2_CUPS_MM  = GROUND_Z_MM + 2 * CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM # 2 cups ≈  -22 mm
+MALLOW_HEIGHT_3_CUPS_MM  = GROUND_Z_MM + 3 * CUP_SINGLE_HEIGHT_MM + MARSHMALLOW_RADIUS_MM # 3 cups ≈  +72 mm
 
 _CUP_TIER_HEIGHTS_MM = (
     MALLOW_HEIGHT_0_CUPS_MM,

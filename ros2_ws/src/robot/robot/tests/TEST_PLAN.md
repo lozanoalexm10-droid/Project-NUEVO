@@ -430,6 +430,46 @@ Align the turntable to the forward mark before running — the script uses open-
 
 ---
 
+### M9 — Turntable Pick-and-Place (left-side scan, hardware-limited)
+
+| Field  | Value |
+|---|---|
+| Script | `turntable_pick_place_test.py` |
+| Nodes  | bridge (auto) + vision + robot |
+| Status | Ready — run after M1, M_campan, M6 pass |
+
+**Terminals needed:** 3
+| Terminal | Command |
+|---|---|
+| T1 | Docker up (bridge auto-starts) |
+| T2 | `ros2 run vision vision` |
+| T3 | `python3 /ros2_ws/src/robot/robot/tests/scripts/turntable_pick_place_test.py` |
+
+Place a red Solo cup stack (with marshmallow on top) to the **left** of the robot's forward direction (+y side) within 200–400 mm.
+BTN_1 to start, BTN_2 to abort and restow at any point.
+
+**Hardware constraint (temporary):** Turntable cannot go below −5°. Place angle (−45°) is clamped to −5° until the axle set-screw issue is resolved. This print is shown at startup.
+
+**Safe arm sequence:** Elbow moves to 100° first, then shoulder to 70°, before any turntable or other motor motion. This applies to homing and every subsequent rotation.
+
+**Before running — verify these constants in `_manipulator_config.py`:**
+- `ARM_SHOULDER_HEIGHT_MM` — measure shoulder pivot height above the base plate. Directly affects IK for pick AND place. The placeholder (120 mm) will give wrong arm angles.
+- `ULTRASONIC_FOREARM_OFFSET_MM` — measure from elbow pivot to US sensor along the forearm.
+- `SAFE_ELBOW_DEG` / `SAFE_SHOULDER_DEG` — 100° / 70° (defined in the script). Tune if arm contacts chassis.
+
+> **Note on z = 0:** The IK coordinate origin is the **robot base plate**, not the ground. `PLATE_Z_MM = 15 mm` means 15 mm above the base plate. If the placement target is on the floor (robot is elevated on wheels), you need a negative z, which requires the arm to reach below the base plate. Check whether this is mechanically possible with your arm geometry before running.
+
+**Pass:**
+- Startup prints computed place coordinates and shoulder-height warning.
+- Arm raises safely (elbow then shoulder) before any motor moves.
+- Camera scans left/centre positions only; skips detections below −5° turntable.
+- Turntable moves to detected bearing, US refines x/y.
+- Arm picks marshmallow (gripper closes to `GRIPPER_GRAB_DEG`).
+- Turntable rotates to place angle (−5° clamped), arm extends and releases.
+- Arm restows cleanly.
+
+---
+
 ### M_ik — IK Calibration (MUST COMPLETE BEFORE ANY DEMO)
 
 | Field  | Value |
