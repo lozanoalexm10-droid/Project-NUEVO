@@ -111,14 +111,16 @@ from robot.tests.scripts._manipulator_config import (
 TURNTABLE_HW_LIMIT_DEG = -5.0
 
 # Safe arm positions used before EVERY turntable move.
-# Elbow moves FIRST to swing the forearm clear of the chassis,
-# then shoulder lifts the upper arm.  Tune if contact still occurs.
-SAFE_ELBOW_DEG    = 100.0   # forearm swung clear
-SAFE_SHOULDER_DEG = 70.0    # upper arm lifted
+# Shoulder moves FIRST to 150° to lift the upper arm clear of hardware,
+# then elbow moves to 90°.  Order is mandatory — reversing it caused hardware contact.
+SAFE_SHOULDER_DEG = 150.0   # upper arm lifted clear of hardware first
+SAFE_ELBOW_DEG    = 90.0    # forearm swung clear after shoulder is up
 
-# Left-side campan sweep — right position (+60°) skipped because the cup
-# stack is expected on the robot-left / +y side of the forward direction.
-LEFT_SCAN_CAMPAN_DEG = [-60.0, 0.0]
+# Full-arc campan sweep: start at left, work through center into negative (right).
+# Ordered 60° → 0° → -60° so detection at 0° (primary bearing) is hit early
+# and the sweep continues into negative degrees where the hardware-limited
+# place target lives.
+SCAN_CAMPAN_DEG = [60.0, 30.0, 0.0, -30.0, -60.0]
 
 # Place target — -45° is the intended final bearing once hardware is fixed.
 # For now it is clamped to TURNTABLE_HW_LIMIT_DEG (-5°) at runtime.
@@ -160,17 +162,17 @@ def _safe_arm_retract(
 ) -> tuple[float, float, float]:
     """Retract arm to safe carry position before any turntable rotation.
 
-    Order is mandatory: elbow first (clears chassis), then shoulder (lifts arm).
+    Order is mandatory: shoulder first (lifts arm clear of hardware), then elbow.
     Gripper closes to avoid snagging.
     """
     robot.enable_servo(ELBOW_CHANNEL)
     robot.enable_servo(SHOULDER_CHANNEL)
     robot.enable_servo(GRIPPER_CHANNEL)
     gripper_pos  = _move_servo(robot, GRIPPER_CHANNEL,  gripper_pos,  GRIPPER_CLOSE_DEG)
-    elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    SAFE_ELBOW_DEG,
-                               ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
     shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, SAFE_SHOULDER_DEG,
                                SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
+    elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    SAFE_ELBOW_DEG,
+                               ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
     return shoulder_pos, elbow_pos, gripper_pos
 
 
@@ -311,10 +313,15 @@ def run(robot: Robot) -> None:  # noqa: C901
             if robot.get_button(Button.BTN_2):
                 robot.shutdown()
                 return
-            if robot.get_button(Button.BTN_1):
-                print("[TEST] BTN_1 pressed — starting pick-and-place sequence.")
-                state = "SAFE_RAISE"
-                state_entry_time = time.monotonic()
+            print("[TEST] Starting in 3...")
+            time.sleep(1)
+            print("[TEST] Starting in 2...")
+            time.sleep(1)
+            print("[TEST] Starting in 1...")
+            time.sleep(1)
+            print("[TEST] GO — starting pick-and-place sequence.")
+            state = "SAFE_RAISE"
+            state_entry_time = time.monotonic()
 
         # ── SAFE_RAISE ───────────────────────────────────────────────────────
         # Must execute before ANY turntable or other servo motion.
@@ -326,19 +333,19 @@ def run(robot: Robot) -> None:  # noqa: C901
             robot.enable_servo(GRIPPER_CHANNEL)
             time.sleep(0.2)
 
-            # 1. Elbow first — swing forearm away from chassis
-            elbow_pos = _move_servo(
-                robot, ELBOW_CHANNEL, elbow_pos, SAFE_ELBOW_DEG,
-                ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
-            )
-            print(f"[TEST] SAFE_RAISE — elbow at {elbow_pos:.1f}°")
-
-            # 2. Shoulder — raise upper arm
+            # 1. Shoulder first — lift upper arm clear of hardware
             shoulder_pos = _move_servo(
                 robot, SHOULDER_CHANNEL, shoulder_pos, SAFE_SHOULDER_DEG,
                 SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX,
             )
-            print(f"[TEST] SAFE_RAISE — shoulder at {shoulder_pos:.1f}°  arm clear.")
+            print(f"[TEST] SAFE_RAISE — shoulder at {shoulder_pos:.1f}°")
+
+            # 2. Elbow — swing forearm clear
+            elbow_pos = _move_servo(
+                robot, ELBOW_CHANNEL, elbow_pos, SAFE_ELBOW_DEG,
+                ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
+            )
+            print(f"[TEST] SAFE_RAISE — elbow at {elbow_pos:.1f}°  arm clear.")
 
             # Open gripper for upcoming approach
             gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_OPEN_DEG)
@@ -358,9 +365,6 @@ def run(robot: Robot) -> None:  # noqa: C901
 
             # Arm is already in safe position from SAFE_RAISE — home turntable now
             turntable_home_offset = _home_turntable(robot)
-
-            # Center campan
-            _campan_to_deg(robot, 0.0)
 
             print("[TEST] ARM_HOME — ready.  Moving to SCANNING.")
             state = "SCANNING"
@@ -388,7 +392,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 cup_mallow_hits:      list[dict] = []
                 fallback_mallow_hits: list[dict] = []
 
-                for pan_deg in LEFT_SCAN_CAMPAN_DEG:
+                for pan_deg in SCAN_CAMPAN_DEG:
                     _campan_to_deg(robot, pan_deg)
                     time.sleep(CAMPAN_SETTLE_S)
                     cup_dets    = robot.get_detections(CUP_CLASS)

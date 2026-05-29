@@ -230,6 +230,38 @@ If arcs overshoot toward walls, reduce `RY_ARC1`, `RY_BOT`, or `RY_ARC2` in the 
 
 ---
 
+### D2c — Venue Full Course (no-obstacle path + lane-switch avoidance)
+
+| Field  | Value |
+|---|---|
+| File   | `tests/scripts/venue_full_course_test.py` |
+| Nodes  | bridge (auto) + everything_but_robot + robot |
+| Status | Ready — run after D1 and D2 pass |
+
+```python
+# main.py
+from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
+```
+
+**Same terminals as D1.**
+
+Combines the full venue path geometry (D2) with LiDAR lane-switch obstacle avoidance (D1) in one seamless run. Splits the route into three segments:
+
+| Segment | Path | Avoidance |
+|---|---|---|
+| PRE_OBSTACLE | Lane 1 up → arc → lane 2 down → bottom arc to x=1525 | Off (pure pursuit) |
+| OBSTACLE | Straight up x=1525 centerline through lanes 3+4 | On (LiDAR lane-switch) |
+| POST_OBSTACLE | Exit arc → lane 5 down to finish | Off (pure pursuit) |
+
+No vision-based stop-sign or traffic-light detection — those are in D3/full_venue_route.
+
+**Auto-starts 3 seconds after the robot node launches** — be ready.
+BTN_2 aborts during the initial 3-second countdown.
+
+**Pass:** All three segments complete without stopping. Robot reaches the lane-5 finish position. Obstacle zone: robot detects and switches lanes, returns to x=1525 centreline before the exit arc.
+
+---
+
 ### D3 — Full Venue Route (3 segments)
 
 | Field  | Value |
