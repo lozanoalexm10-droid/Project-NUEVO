@@ -4,8 +4,8 @@ from launch_ros.actions import Node
 
 COMMON_PARAMETERS = {
     "camera_device": "/dev/video10",
-    "camera_width": 640,
-    "camera_height": 480,
+    "camera_width": 1280,
+    "camera_height": 720,
     "camera_fps": 15.0,
     "process_rate_hz": 4.0,
     "model_imgsz": 416,

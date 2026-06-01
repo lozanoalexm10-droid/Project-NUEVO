@@ -199,6 +199,69 @@ Drives the full venue path with obstacle avoidance disabled.
 
 ---
 
+### D2b — Venue No Obstacles — Wide-Arc Variant
+
+| Field  | Value |
+|---|---|
+| File   | `tests/scripts/venue_no_obstacles_wide_arc_test.py` |
+| Nodes  | bridge (auto) + everything_but_robot + robot |
+| Status | Ready — run after D2 passes |
+
+```python
+# main.py
+from robot.tests.scripts.venue_no_obstacles_wide_arc_test import run  # noqa: F401
+```
+
+**Same terminals as D1.**
+
+Tests wider elliptical U-turns made possible by the reduced 30 mm front omni-wheel axle footprint.
+**Place the robot 30 mm to the left of the lane-1 centreline** before starting — this becomes odometry (0, 0).
+
+Arc geometry vs D2:
+
+| Arc    | v1 Rx / Ry (mm) | wide Rx / Ry (mm) | Peak/dip → wall clearance |
+|--------|-----------------|-------------------|---------------------------|
+| Top 1  | 305 / 305       | 320 / 430         | 3580 mm → 270 mm clear    |
+| Bottom | 457.5 / 457.5   | 457.5 / 500       | 600 mm → 290 mm clear     |
+| Top 2  | 457.5 / 457.5   | 457.5 / 430       | 3580 mm → 270 mm clear    |
+
+**Pass:** All three U-turns complete without wall contact. Robot finishes centred on lane 5 at y ≈ 700 mm.
+If arcs overshoot toward walls, reduce `RY_ARC1`, `RY_BOT`, or `RY_ARC2` in the script by 20–30 mm at a time.
+
+---
+
+### D2c — Venue Full Course (no-obstacle path + lane-switch avoidance)
+
+| Field  | Value |
+|---|---|
+| File   | `tests/scripts/venue_full_course_test.py` |
+| Nodes  | bridge (auto) + everything_but_robot + robot |
+| Status | Ready — run after D1 and D2 pass |
+
+```python
+# main.py
+from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
+```
+
+**Same terminals as D1.**
+
+Combines the full venue path geometry (D2) with LiDAR lane-switch obstacle avoidance (D1) in one seamless run. Splits the route into three segments:
+
+| Segment | Path | Avoidance |
+|---|---|---|
+| PRE_OBSTACLE | Lane 1 up → arc → lane 2 down → bottom arc to x=1525 | Off (pure pursuit) |
+| OBSTACLE | Straight up x=1525 centerline through lanes 3+4 | On (LiDAR lane-switch) |
+| POST_OBSTACLE | Exit arc → lane 5 down to finish | Off (pure pursuit) |
+
+No vision-based stop-sign or traffic-light detection — those are in D3/full_venue_route.
+
+**Auto-starts 3 seconds after the robot node launches** — be ready.
+BTN_2 aborts during the initial 3-second countdown.
+
+**Pass:** All three segments complete without stopping. Robot reaches the lane-5 finish position. Obstacle zone: robot detects and switches lanes, returns to x=1525 centreline before the exit arc.
+
+---
+
 ### D3 — Full Venue Route (3 segments)
 
 | Field  | Value |
@@ -396,6 +459,46 @@ Moves turntable to known angles (45°, 90°, 135°) and returns to 0°.
 Align the turntable to the forward mark before running — the script uses open-loop step counts from startup position.
 
 **Pass:** Each move completes before timeout. Stepper returns to 0° without stalling or grinding.
+
+---
+
+### M9 — Turntable Pick-and-Place (left-side scan, hardware-limited)
+
+| Field  | Value |
+|---|---|
+| Script | `turntable_pick_place_test.py` |
+| Nodes  | bridge (auto) + vision + robot |
+| Status | Ready — run after M1, M_campan, M6 pass |
+
+**Terminals needed:** 3
+| Terminal | Command |
+|---|---|
+| T1 | Docker up (bridge auto-starts) |
+| T2 | `ros2 run vision vision` |
+| T3 | `python3 /ros2_ws/src/robot/robot/tests/scripts/turntable_pick_place_test.py` |
+
+Place a red Solo cup stack (with marshmallow on top) to the **left** of the robot's forward direction (+y side) within 200–400 mm.
+BTN_1 to start, BTN_2 to abort and restow at any point.
+
+**Hardware constraint (temporary):** Turntable cannot go below −5°. Place angle (−45°) is clamped to −5° until the axle set-screw issue is resolved. This print is shown at startup.
+
+**Safe arm sequence:** Elbow moves to 100° first, then shoulder to 70°, before any turntable or other motor motion. This applies to homing and every subsequent rotation.
+
+**Before running — verify these constants in `_manipulator_config.py`:**
+- `ARM_SHOULDER_HEIGHT_MM` — measure shoulder pivot height above the base plate. Directly affects IK for pick AND place. The placeholder (120 mm) will give wrong arm angles.
+- `ULTRASONIC_FOREARM_OFFSET_MM` — measure from elbow pivot to US sensor along the forearm.
+- `SAFE_ELBOW_DEG` / `SAFE_SHOULDER_DEG` — 100° / 70° (defined in the script). Tune if arm contacts chassis.
+
+> **Note on z = 0:** The IK coordinate origin is the **robot base plate**, not the ground. `PLATE_Z_MM = 15 mm` means 15 mm above the base plate. If the placement target is on the floor (robot is elevated on wheels), you need a negative z, which requires the arm to reach below the base plate. Check whether this is mechanically possible with your arm geometry before running.
+
+**Pass:**
+- Startup prints computed place coordinates and shoulder-height warning.
+- Arm raises safely (elbow then shoulder) before any motor moves.
+- Camera scans left/centre positions only; skips detections below −5° turntable.
+- Turntable moves to detected bearing, US refines x/y.
+- Arm picks marshmallow (gripper closes to `GRIPPER_GRAB_DEG`).
+- Turntable rotates to place angle (−5° clamped), arm extends and releases.
+- Arm restows cleanly.
 
 ---
 

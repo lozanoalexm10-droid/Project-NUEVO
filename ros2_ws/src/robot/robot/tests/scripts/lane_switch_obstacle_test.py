@@ -111,14 +111,14 @@ def run(robot: Robot) -> None:
                 lookahead_distance=100.0,
                 max_linear_speed=90.0,
                 max_angular_speed=1.0,
-                goal_tolerance=20.0,
-                obstacles_range=450.0,
-                view_angle=math.radians(70.0),
-                safe_dist=250.0,
-                avoidance_delay=200,
+                goal_tolerance=30.0,
+                obstacles_range=550.0,
+                view_angle=math.radians(65.0),
+                safe_dist=360.0,
+                avoidance_delay=420, # Was 200, Switched to 450
                 alpha_Ld=1.3,
                 offset=250.0,
-                lane_width=500.0,
+                lane_width=400.0, # Switched from 500 to 400
                 obstacle_avoidance=True,
                 x_L=0.0,
             )

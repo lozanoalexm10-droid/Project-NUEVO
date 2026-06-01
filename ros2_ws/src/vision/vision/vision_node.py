@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 from pathlib import Path
 import time
 
@@ -212,6 +213,8 @@ class VisionNode(Node):
                 self._camera.handle_read_failure()
                 scheduler.reset()
                 continue
+
+            frame = cv2.flip(frame, -1)  # camera is mounted upside-down
 
             capture_stamp = self.get_clock().now().to_msg()
             inference_start = time.monotonic()

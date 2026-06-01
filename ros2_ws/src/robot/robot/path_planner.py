@@ -610,7 +610,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             if self.avoidance_active:
                 self.avoidance_active = False
                 self.Ld = self.raw_LD
-                self.avoidance_counter = 0
+                # Do NOT reset avoidance_counter here — let it count down
+                # naturally so detection stays blocked until the hat is done.
 
         return self.remaining_path
 
@@ -670,8 +671,15 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                 arg_dist = np.argmin(dists)
                 closest_pt = obstacles[arg_dist,:] # closest obstacle point in world frame
 
+                # Minimum lateral shift to achieve safe_dist clearance from current robot x.
+                lateral_gap = abs(closest_pt[0] - x)
+                needed_offset = max(self.safe_dist - lateral_gap, 0.0)
+
                 change_lane = False
-                if (closest_pt[0] < self.x_L and self.current_lane!='Right') or (closest_pt[0] > self.x_L and self.current_lane!='Left'):
+                if needed_offset > 10.0 and (
+                    (closest_pt[0] < self.x_L and self.current_lane != 'Right') or
+                    (closest_pt[0] > self.x_L and self.current_lane != 'Left')
+                ):
                     change_lane = True
                     # reduce lookahead distance to track added waypoints more precisely.
                     self.Ld = self.raw_LD * self.alpha_Ld
@@ -680,28 +688,35 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                     self.avoidance_counter = self.avoidance_delay
                     self.avoidance_active = True
 
-                # Generate new waypoints based on the desired waypoints on the center lane.
+                # Generate a hat-shaped detour: entry → hold past obstacle → return to center.
                 if change_lane:
-                    dx = self.offset if closest_pt[0] < self.x_L else -self.offset
-                    self.current_lane = 'Right' if closest_pt[0] < self.x_L else 'Left'
-                    print('Change Lane!!! Current lane is:', self.current_lane)
+                    dx = needed_offset if closest_pt[0] < self.x_L else -needed_offset
+                    self.current_lane = 'Center'
+                    print('Obstacle avoidance: shift', round(dx), 'mm, returning to center')
 
-                    # Smooth entry point: ~22° approach angle (forward = 2.5× lateral).
-                    # Only carry forward waypoints past this point so pure pursuit never
-                    # sees a target behind the robot (which causes a full pivot spin).
+                    # Entry: reach offset, but cap before the cone so the robot
+                    # finishes the lateral shift before reaching the obstacle.
                     smooth_y = y + abs(dx) * 2.5
-                    ahead     = [(x_ + dx, y_) for x_, y_ in self.raw_path if y_ > smooth_y] \
-                                or [(self.raw_path[-1][0] + dx, self.raw_path[-1][1])]
-                    ahead_raw = [(x_, y_)       for x_, y_ in self.raw_path if y_ > smooth_y] \
-                                or [self.raw_path[-1]]
-                    self.remaining_path = [(x + dx, smooth_y)] + ahead
-                    self.raw_path       = [(x + dx, smooth_y)] + ahead_raw
+                    smooth_y = min(smooth_y, closest_pt[1] - abs(dx) * 0.5)
+                    smooth_y = max(smooth_y, y + 20.0)
+                    # Hold: stay offset until safe_dist past the obstacle
+                    clear_y  = max(smooth_y, closest_pt[1]) + self.safe_dist
+                    # Exit: symmetric return to center
+                    return_y = clear_y + abs(dx) * 2.5
 
-                    if np.hypot(x-closest_pt[0], y-closest_pt[1]) < (self.safe_dist+self.obstacles_range)/2:
+                    # Center-lane waypoints beyond the return point (no lateral shift)
+                    beyond = [(x_, y_) for x_, y_ in self.raw_path if y_ > return_y] \
+                             or [self.raw_path[-1]]
+
+                    self.remaining_path = [(x + dx, smooth_y), (x + dx, clear_y), (self.x_L, return_y)] + beyond
+                    self.raw_path       = [(x + dx, smooth_y), (x + dx, clear_y), (self.x_L, return_y)] + beyond
+
+                    intermed_y = y + abs(dx) * 1.25
+                    if np.hypot(x-closest_pt[0], y-closest_pt[1]) < (self.safe_dist+self.obstacles_range)/2 \
+                            and intermed_y < smooth_y:
                         print('Too Close!!!')
-                        # Intermediate point at the same ~22° angle, halfway through the shift.
-                        self.remaining_path.insert(0, (x + dx * 0.5, y + abs(dx) * 1.25))
-                        self.raw_path.insert(0,       (x + dx * 0.5, y + abs(dx) * 1.25))
+                        self.remaining_path.insert(0, (x + dx * 0.5, intermed_y))
+                        self.raw_path.insert(0,       (x + dx * 0.5, intermed_y))
 
         if self.avoidance_counter > 0:
             self.avoidance_counter -= 1

@@ -96,8 +96,31 @@ def _move_servo(robot: Robot, channel: int, current: float, target: float,
 
 def _turntable_to_deg(robot: Robot, target_deg: float, home_offset_deg: float = TURNTABLE_HOME_OFFSET_DEG) -> None:
     target_deg = max(TURNTABLE_MIN_DEG, min(TURNTABLE_MAX_DEG, target_deg))
-    steps = turntable_deg_to_steps(target_deg + home_offset_deg)
+    steps = turntable_deg_to_steps(home_offset_deg - target_deg)
     robot.step_move(TURNTABLE_STEPPER, steps, StepMoveType.ABSOLUTE)
+
+
+def _carry_pose(robot: Robot, shoulder_pos: float, elbow_pos: float,
+                gripper_pos: float) -> tuple[float, float, float]:
+    """Retract arm to safe carry pose. Always call before rotating the turntable."""
+    robot.enable_servo(SHOULDER_CHANNEL)
+    robot.enable_servo(ELBOW_CHANNEL)
+    robot.enable_servo(GRIPPER_CHANNEL)
+    gripper_pos  = _move_servo(robot, GRIPPER_CHANNEL,  gripper_pos,  GRIPPER_CLOSE_DEG)
+    elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    ARM_CARRY_ELBOW_DEG,
+                               ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
+    shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, ARM_CARRY_SHOULDER_DEG,
+                               SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
+    return shoulder_pos, elbow_pos, gripper_pos
+
+
+def _rotate_turntable_safe(robot: Robot, target_deg: float, home_offset_deg: float,
+                           shoulder_pos: float, elbow_pos: float,
+                           gripper_pos: float) -> tuple[float, float, float]:
+    """Retract arm to carry pose then rotate turntable. Use instead of _turntable_to_deg."""
+    shoulder_pos, elbow_pos, gripper_pos = _carry_pose(robot, shoulder_pos, elbow_pos, gripper_pos)
+    _turntable_to_deg(robot, target_deg, home_offset_deg)
+    return shoulder_pos, elbow_pos, gripper_pos
 
 
 def _home_turntable(robot: Robot) -> float:
@@ -111,10 +134,10 @@ def _home_turntable(robot: Robot) -> float:
     print("[HOME] Homing turntable CCW to stow (LIM1)...")
     success = robot.step_home(
         TURNTABLE_STEPPER,
-        direction=-1,        # CCW = toward stow/LIM1
-        home_velocity=300,   # slow for safe homing
-        backoff_steps=50,    # back off ~2.8° after trigger
-        timeout=15.0,
+        direction=-1,         # CCW = toward stow/LIM1
+        home_velocity=2000,   # firmware divides by 4 → ~500 sps actual; 180° ≈ 6s
+        backoff_steps=50,
+        timeout=25.0,
     )
     if success:
         print("[HOME] Turntable homed. Stow = firmware step 0.")
@@ -122,8 +145,8 @@ def _home_turntable(robot: Robot) -> float:
         print("[HOME] WARNING: turntable homing timed out — LIM1 may not be wired. "
               "Continuing with manual alignment (offset=0.0).")
         return 0.0
-    # firmware 0 = stow = our 180°  →  offset = -180° so _turntable_to_deg(180°) → step 0
-    return -TURNTABLE_MAX_DEG
+    # firmware 0 = stow = our 180°  →  offset = +180 so _turntable_to_deg uses (180 - target)
+    return TURNTABLE_MAX_DEG
 
 
 def _campan_to_deg(robot: Robot, target_deg: float) -> None:
@@ -354,10 +377,9 @@ def run(robot: Robot) -> None:  # noqa: C901
                     state_entry_time = time.monotonic()
 
         # ── RANGING ───────────────────────────────────────────────────────────
-        # Rotate turntable to bearing. Arm stays in search pose — no movement.
-        # US reading is FK-corrected for the forearm's elevation angle to get
-        # accurate horizontal reach. mallow_height_est (snapped tier) is always
-        # used for z since it is more reliable than the US vertical component.
+        # Retract arm to carry pose, rotate turntable to bearing, re-extend to
+        # search pose so the US FK correction uses the correct arm geometry.
+        # mallow_height_est (snapped tier) is always used for z.
         # Falls back to camera distance if US is unavailable or out of range.
         elif state == "RANGING":
             if robot.get_button(Button.BTN_2):
@@ -367,7 +389,13 @@ def run(robot: Robot) -> None:  # noqa: C901
 
             print(f"[DEMO] RANGING — turntable to {arm_turntable_deg:.1f}°, "
                   f"camera dist={mallow_dist_est:.0f}mm height={mallow_height_est:.0f}mm")
-            _turntable_to_deg(robot, arm_turntable_deg, turntable_home_offset)
+            shoulder_pos, elbow_pos, gripper_pos = _rotate_turntable_safe(
+                robot, arm_turntable_deg, turntable_home_offset,
+                shoulder_pos, elbow_pos, gripper_pos)
+            shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, ARM_SEARCH_SHOULDER_DEG,
+                                       SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
+            elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    ARM_SEARCH_ELBOW_DEG,
+                                       ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
             time.sleep(0.2)
 
             # Camera-based estimate is the default; US overwrites x/y if plausible.
@@ -450,11 +478,9 @@ def run(robot: Robot) -> None:  # noqa: C901
                 state = "RESTOWING"
                 state_entry_time = time.monotonic()
             else:
-                shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, ARM_CARRY_SHOULDER_DEG,
-                                           SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
-                elbow_pos    = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, ARM_CARRY_ELBOW_DEG,
-                                           ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
-                _turntable_to_deg(robot, plate_t_deg, turntable_home_offset)
+                shoulder_pos, elbow_pos, gripper_pos = _rotate_turntable_safe(
+                    robot, plate_t_deg, turntable_home_offset,
+                    shoulder_pos, elbow_pos, gripper_pos)
                 shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, plate_sh,
                                            SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
                 elbow_pos    = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, plate_el,

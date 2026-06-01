@@ -10,7 +10,7 @@ except ImportError:
     from _manipulator_config import ELBOW_CHANNEL, GRIPPER_CHANNEL, SHOULDER_CHANNEL
 
 # ── Edit these ────────────────────────────────────────────────────────────────
-CHANNEL     = GRIPPER_CHANNEL  # swap to SHOULDER_CHANNEL or ELBOW_CHANNEL as needed
+CHANNEL     = ELBOW_CHANNEL  # swap to SHOULDER_CHANNEL or ELBOW_CHANNEL as needed
 
 # GRIPPER direction (confirmed): LOWER angle = more open, HIGHER angle = more closed.
 # 70° was past fully open. Start closed and sweep toward open to find the right position.
