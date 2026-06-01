@@ -140,6 +140,7 @@ S = SimpleNamespace(
     sweep_from=None,   # sweep start angle (deg); default = joint safe min
     sweep_to=None,     # sweep end angle (deg);   default = joint safe max
     grab=False,        # go straight to the search pose and grab (no ultrasonic descent)
+    grip=GRIPPER_GRAB_DEG,  # gripper close angle for the grab (higher = tighter)
 )
 
 
@@ -407,8 +408,8 @@ def run(robot: Robot) -> None:  # noqa: C901 — the pipeline is intentionally l
         # ── GRAB MODE: jaws are already around the target at this pose; close ──
         if S.grab:
             time.sleep(0.4)
-            print(f"[PICK] GRAB: closing gripper → {GRIPPER_GRAB_DEG}° (no ultrasonic descent).")
-            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_GRAB_DEG, 0.0, 180.0)
+            print(f"[PICK] GRAB: closing gripper → {S.grip}° (no ultrasonic descent).")
+            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, S.grip, 0.0, 180.0)
             time.sleep(0.4)
             print(f"[PICK] Lifting to carry: elbow={ARM_CARRY_ELBOW_DEG}°, shoulder={ARM_CARRY_SHOULDER_DEG}°")
             elbow_pos = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, ARM_CARRY_ELBOW_DEG,
@@ -459,8 +460,8 @@ def run(robot: Robot) -> None:  # noqa: C901 — the pipeline is intentionally l
             return
 
         # ── 10. Close gripper ─────────────────────────────────────────────────
-        print(f"[PICK] Closing gripper → {GRIPPER_GRAB_DEG}°")
-        gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_GRAB_DEG, 0.0, 180.0)
+        print(f"[PICK] Closing gripper → {S.grip}°")
+        gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, S.grip, 0.0, 180.0)
         time.sleep(0.3)
 
         # ── 11. Lift to carry pose (elbow first, then shoulder) ───────────────
@@ -512,6 +513,11 @@ def _parse_args(argv=None):
                    help="Sweep start angle (deg). Default: joint safe minimum.")
     p.add_argument("--sweep-to", type=float, default=None,
                    help="Sweep end angle (deg). Default: joint safe maximum.")
+    p.add_argument("--grab", action="store_true",
+                   help="Go straight to the --shoulder/--elbow pose and close the gripper "
+                        "(open→grab→lift), with NO ultrasonic descent. Use once the pose is known.")
+    p.add_argument("--grip", type=float, default=GRIPPER_GRAB_DEG,
+                   help="Gripper close angle for the grab (deg; higher = tighter hold).")
     return p.parse_args(argv)
 
 
@@ -537,6 +543,8 @@ def main() -> None:
     S.sweep = args.sweep
     S.sweep_from = args.sweep_from
     S.sweep_to = args.sweep_to
+    S.grab = args.grab
+    S.grip = args.grip
 
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node("marshmallow_pick")
@@ -553,10 +561,18 @@ def main() -> None:
     try:
         run(robot)
     finally:
-        try:
-            robot.shutdown()
-        except Exception:
-            pass
+        # robot.shutdown() transitions the firmware to IDLE, which cuts power to
+        # the servos and RELEASES the gripper. In --grab mode we want to keep
+        # holding the marshmallow, so we deliberately skip shutdown and leave the
+        # firmware RUNNING with the gripper enabled. The bridge keeps the firmware
+        # alive after this script exits, so the grip is maintained.
+        if not S.grab:
+            try:
+                robot.shutdown()
+            except Exception:
+                pass
+        else:
+            print("[PICK] --grab: leaving firmware RUNNING and gripper enabled to hold the marshmallow.")
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
