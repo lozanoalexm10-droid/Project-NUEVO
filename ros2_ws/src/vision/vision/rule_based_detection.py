@@ -110,14 +110,19 @@ def detect_marshmallow(
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
     # Minimum blob size: allows marshmallow to be small when far away (~12 in).
+    # Maximum blob size: rejects large background regions (walls, ceiling, floor).
+    # A real marshmallow (38 mm dia) fills at most ~12 % of a 1280×720 frame even
+    # when held ~90 mm from the camera — anything larger is almost certainly clutter.
+    frame_h, frame_w = frame_bgr.shape[:2]
     min_area_px    = 400
+    max_area_px    = int(frame_w * frame_h * 0.12)
     min_fill_ratio = 0.30
     max_aspect     = 3.0   # rejects thin walls, paper edges, bright fixtures
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         contour_area = float(cv2.contourArea(contour))
-        if contour_area < min_area_px:
+        if contour_area < min_area_px or contour_area > max_area_px:
             continue
 
         x, y, width, height = cv2.boundingRect(contour)

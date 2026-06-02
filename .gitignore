@@ -229,3 +229,4 @@ logs/
 # Large binary assets (document separately)
 # *.stl  # Uncomment if STL files are too large
 # *.step # Uncomment if STEP files are too large
+vision_latest.jpg
