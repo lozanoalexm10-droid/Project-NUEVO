@@ -26,12 +26,12 @@ checkpoint (0, 0). The GPS/AprilTag fusion will correct position drift in-flight
 
 Edit these two lines before each run:
 """
+from __future__ import annotations
+
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1     # 1–4: segment to begin from; 1 = full course from start
 AUTO_START    = True  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
-
-from __future__ import annotations
 
 import math
 import time
@@ -40,7 +40,6 @@ from robot.hardware_map import (
     Button,
     DCPidLoop,
     DEFAULT_FSM_HZ,
-    INITIAL_THETA_DEG,
     LED,
     LEFT_WHEEL_DIR_INVERTED,
     LEFT_WHEEL_MOTOR,
@@ -58,11 +57,24 @@ from robot.robot import FirmwareState, Robot
 from robot.util import densify_polyline
 
 # ── Nav tuning ─────────────────────────────────────────────────────────────────
-LOOKAHEAD_MM             = 200.0   # larger = wider, smoother 90° corners
-LINEAR_SPEED             = 140.0   # mm/s
-MIN_TRAFFIC_CONF         = 0.50
-VISION_STALE_S           = 3.0
-STOP_SIGN_DWELL_S        = 3.0     # seconds to hold at stop sign before resuming
+MIN_TRAFFIC_CONF  = 0.50
+VISION_STALE_S    = 3.0
+STOP_SIGN_DWELL_S = 3.0
+
+# Per-segment tuning — adjust speed (mm/s) and lookahead (mm) here.
+# Larger lookahead = wider, earlier turns = less corner overshoot.
+#   SEG1  : north straight to CP1
+#   SEG2  : top-left U-turn to CP2
+#   SEG3A : east approach to obstacle zone
+#   SEG3B : north through obstacle zone (avoidance ON)
+#   SEG3C : finish north run + 90° right turn + east to CP3 (avoidance OFF)
+#   SEG4  : top-right U-turn → lane 5 → finish
+SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
+SEG2_CFG  = dict(speed=120, lookahead=300, spacing=50)
+SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
+SEG3B_CFG = dict(speed=90,  lookahead=100, spacing=400, safe_dist=150, lane_width=400, avoidance_delay=250)
+SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
+SEG4_CFG  = dict(speed=120, lookahead=300, spacing=50)
 
 # ── Course geometry (mm, absolute odometry frame, x=east y=north) ─────────────
 X_LANE1   =    0.0    # lane 1 centre (robot start x)
@@ -70,8 +82,8 @@ X_LANE2   =  610.0    # lane 2 centre
 X_OBS_MID = 1525.0    # obstacle zone centreline
 X_LANE5   = 2440.0    # lane 5 centre
 
-Y_START   =    0.0    # course start y
-Y_TOP     = 3660.0    # far (north) end of course — top turns happen here
+Y_START   =    -160.0    # course start y
+Y_TOP     = 3500.0    # far (north) end of course — top turns happen here
 Y_BOT     =  610.0    # near (south) end — bottom turns happen here
 
 FINISH_X  = 2440.0    # manipulation station x (lane 5)
@@ -102,26 +114,38 @@ SEG1_PATH = [
 #   Corner at lane-2 bottom → turn right (east). Ends at CP2.
 SEG2_PATH = [
     (X_LANE1 + 305.0, Y_TOP),  # CP1
-    (X_LANE2, Y_TOP),           # 90° right-turn corner (now south)
-    (X_LANE2, Y_BOT),           # 90° right-turn corner (now east)
+    (X_LANE2 + 20.0, Y_TOP),           # 90° right-turn corner (now south)
+    (X_LANE2 + 20.0, Y_BOT),           # 90° right-turn corner (now east)
     (X_LANE2 + 457.5, Y_BOT),  # CP2: 457.5 mm east of corner  = (1067.5, 610)
 ]
 
+# Obstacle-zone avoidance entry/exit offsets — how far inside the obstacle
+# zone the avoidance planner activates and deactivates. Keeps the planner from
+# fighting the 90° corner turns or treating the north/south walls as obstacles.
+OBS_ENTRY_OFFSET_MM = 400.0
+OBS_EXIT_OFFSET_MM  = 400.0
+
 # Segment 3: three internal sub-paths with different avoidance settings.
-#   3a (avoidance OFF): CP2 east to obstacle zone entry; 90° left turn (north).
+#   3a (avoidance OFF): CP2 east → corner → OBS_ENTRY_OFFSET_MM north.
+#   The approach carries the robot through the full 90° left turn without
+#   avoidance so the planner doesn't fight the turn.
 SEG3_APPROACH_PATH = [
-    (X_LANE2 + 457.5, Y_BOT),  # CP2
-    (X_OBS_MID, Y_BOT),         # obstacle zone entry; 90° left turn (north)
+    (X_LANE2 + 457.5, Y_BOT),              # CP2
+    (X_OBS_MID, Y_BOT),                    # corner (east → north)
+    (X_OBS_MID, Y_BOT + OBS_ENTRY_OFFSET_MM),  # robot heading north, safe to start avoidance
 ]
-#   3b (avoidance ON): straight north through obstacle zone.
+#   3b (avoidance ON): straight-line north through the obstacle field.
+#   Stops OBS_EXIT_OFFSET_MM short of the north wall so the planner doesn't
+#   treat the wall as an obstacle and detour into it.
 SEG3_OBS_PATH = [
-    (X_OBS_MID, Y_BOT),
-    (X_OBS_MID, Y_TOP),         # top of obstacle zone; 90° right turn (east)
+    (X_OBS_MID, Y_BOT + OBS_ENTRY_OFFSET_MM),
+    (X_OBS_MID, Y_TOP - OBS_EXIT_OFFSET_MM),
 ]
-#   3c (avoidance OFF): east to CP3.
+#   3c (avoidance OFF): finish north run → 90° right turn → east to CP3.
 SEG3_EXIT_PATH = [
-    (X_OBS_MID, Y_TOP),
-    (X_OBS_MID + 457.5, Y_TOP), # CP3: 457.5 mm east of corner  = (1982.5, 3660)
+    (X_OBS_MID, Y_TOP - OBS_EXIT_OFFSET_MM),
+    (X_OBS_MID, Y_TOP),                    # corner (north → east)
+    (X_OBS_MID + 457.5, Y_TOP),            # CP3: 457.5 mm east of corner = (1982.5, 3660)
 ]
 
 # Segment 4: CP3 → lane 5 south → manipulation station.
@@ -132,13 +156,13 @@ SEG4_PATH = [
     (FINISH_X, FINISH_Y),        # manipulation station
 ]
 
-# Map START_SEGMENT to its pre-loaded path (loaded before IDLE so the controller
-# is armed when the start trigger fires).
-_SEG_INITIAL_PATH = {
-    1: (SEG1_PATH,         False, 0.0),
-    2: (SEG2_PATH,         False, 0.0),
-    3: (SEG3_APPROACH_PATH, False, 0.0),
-    4: (SEG4_PATH,         False, 0.0),
+# Per-segment start: (course_x_mm, course_y_mm, heading_deg)
+# heading_deg follows math convention: east=0°, north=90°
+_SEG_START = {
+    1: (X_LANE1,           Y_START, 90.0),   # lane 1, facing north
+    2: (X_LANE1 + 305.0,   Y_TOP,    0.0),   # CP1, facing east
+    3: (X_LANE2 + 457.5,   Y_BOT,    0.0),   # CP2, facing east
+    4: (X_OBS_MID + 457.5, Y_TOP,    0.0),   # CP3, facing east
 }
 
 
@@ -149,7 +173,6 @@ def _configure_robot(robot: Robot) -> None:
     robot.set_odometry_parameters(
         wheel_diameter=WHEEL_DIAMETER,
         wheel_base=WHEEL_BASE,
-        initial_theta_deg=INITIAL_THETA_DEG,
         left_motor_id=LEFT_WHEEL_MOTOR,
         left_motor_dir_inverted=LEFT_WHEEL_DIR_INVERTED,
         right_motor_id=RIGHT_WHEEL_MOTOR,
@@ -165,12 +188,13 @@ def _configure_robot(robot: Robot) -> None:
     robot.set_position_fusion_alpha(0.0)
 
 
-def _init_firmware(robot: Robot) -> None:
+def _init_firmware(robot: Robot, theta_deg: float) -> None:
     current = robot.get_state()
     if current in (FirmwareState.ESTOP, FirmwareState.ERROR):
         robot.reset_estop()
     robot.set_state(FirmwareState.RUNNING)
     time.sleep(0.2)
+    robot.set_initial_theta(theta_deg)
     robot.reset_odometry()
     if not robot.wait_for_odometry_reset(timeout=3.0):
         print("[WARN] Odometry reset not confirmed within 3 s — pose may be stale")
@@ -181,31 +205,32 @@ def _init_firmware(robot: Robot) -> None:
 def _load_path(
     robot: Robot,
     waypoints: list[tuple[float, float]],
+    cfg: dict,
     *,
     obstacle_avoidance: bool,
     x_L: float = 0.0,
 ) -> None:
-    path = densify_polyline(waypoints, spacing=50.0)
+    path = densify_polyline(waypoints, spacing=float(cfg.get("spacing", 50)))
     if obstacle_avoidance:
         robot._nav_follow_pp_path(
-            lookahead_distance=LOOKAHEAD_MM,
-            max_linear_speed=LINEAR_SPEED,
+            lookahead_distance=cfg["lookahead"],
+            max_linear_speed=cfg["speed"],
             max_angular_speed=1.0,
             goal_tolerance=30.0,
             obstacles_range=550.0,
             view_angle=math.radians(65.0),
-            safe_dist=360.0,
-            avoidance_delay=420,
+            safe_dist=float(cfg.get("safe_dist", 360.0)),
+            avoidance_delay=int(cfg.get("avoidance_delay", 420)),
             alpha_Ld=1.3,
             offset=250.0,
-            lane_width=400.0,
+            lane_width=float(cfg.get("lane_width", 360.0)),
             obstacle_avoidance=True,
             x_L=x_L,
         )
     else:
         robot._nav_follow_pp_path(
-            lookahead_distance=LOOKAHEAD_MM,
-            max_linear_speed=LINEAR_SPEED,
+            lookahead_distance=cfg["lookahead"],
+            max_linear_speed=cfg["speed"],
             max_angular_speed=1.5,
             goal_tolerance=20.0,
             obstacles_range=450.0,
@@ -243,12 +268,27 @@ def _estop(robot: Robot) -> None:
 
 def run(robot: Robot) -> None:  # noqa: C901
     _configure_robot(robot)
-    _init_firmware(robot)
+    ox, oy, theta = _SEG_START[START_SEGMENT]
+    _init_firmware(robot, theta)
+
+    def _op(path: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """Shift course-frame waypoints into the odometry frame for this run."""
+        return [(x - ox, y - oy) for x, y in path]
+
+    x_L_obs = X_OBS_MID - ox   # obstacle-zone centreline in odometry frame
 
     # Pre-arm the first segment's path before entering IDLE.
-    first_path, first_avoidance, first_xL = _SEG_INITIAL_PATH[START_SEGMENT]
-    _load_path(robot, first_path, obstacle_avoidance=first_avoidance, x_L=first_xL)
+    if START_SEGMENT == 1:
+        _load_path(robot, _op(SEG1_PATH), SEG1_CFG, obstacle_avoidance=False)
+    elif START_SEGMENT == 2:
+        _load_path(robot, _op(SEG2_PATH), SEG2_CFG, obstacle_avoidance=False)
+    elif START_SEGMENT == 3:
+        _load_path(robot, _op(SEG3_APPROACH_PATH), SEG3A_CFG, obstacle_avoidance=False)
+    elif START_SEGMENT == 4:
+        _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
+
     print(f"[FSM] Ready. START_SEGMENT={START_SEGMENT}  AUTO_START={AUTO_START}")
+    print(f"[FSM] Course offset: ox={ox} oy={oy} theta={theta}°")
     print(f"[FSM] Checkpoints — CP1:{CP1}  CP2:{CP2}  CP3:{CP3}")
 
     state: str = "IDLE"
@@ -307,7 +347,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 _estop(robot); return
             if robot._nav_follow_pp_path_loop() == "IDLE":
                 print("[FSM] SEG1 complete — CP1 reached.")
-                _load_path(robot, SEG2_PATH, obstacle_avoidance=False)
+                _load_path(robot, _op(SEG2_PATH), SEG2_CFG, obstacle_avoidance=False)
                 state = "SEG2"
 
         # ── SEG2: CP1 → complete top-left U-turn → lane 2 south → CP2 ────────
@@ -318,7 +358,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 _estop(robot); return
             if robot._nav_follow_pp_path_loop() == "IDLE":
                 print("[FSM] SEG2 complete — CP2 reached.")
-                _load_path(robot, SEG3_APPROACH_PATH, obstacle_avoidance=False)
+                _load_path(robot, _op(SEG3_APPROACH_PATH), SEG3A_CFG, obstacle_avoidance=False)
                 seg3_phase = "approach"
                 state = "SEG3"
 
@@ -334,15 +374,15 @@ def run(robot: Robot) -> None:  # noqa: C901
             if robot._nav_follow_pp_path_loop() == "IDLE":
                 if seg3_phase == "approach":
                     print("[FSM] SEG3 approach done — entering obstacle zone.")
-                    _load_path(robot, SEG3_OBS_PATH, obstacle_avoidance=True, x_L=X_OBS_MID)
+                    _load_path(robot, _op(SEG3_OBS_PATH), SEG3B_CFG, obstacle_avoidance=True, x_L=x_L_obs)
                     seg3_phase = "obstacle"
                 elif seg3_phase == "obstacle":
-                    print("[FSM] SEG3 obstacle zone done — exiting to CP3 (avoidance ON).")
-                    _load_path(robot, SEG3_EXIT_PATH, obstacle_avoidance=True, x_L=X_OBS_MID)
+                    print("[FSM] SEG3 obstacle zone done — exiting to CP3.")
+                    _load_path(robot, _op(SEG3_EXIT_PATH), SEG3C_CFG, obstacle_avoidance=False)
                     seg3_phase = "exit"
                 elif seg3_phase == "exit":
                     print("[FSM] SEG3 complete — CP3 reached.")
-                    _load_path(robot, SEG4_PATH, obstacle_avoidance=False)
+                    _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
                     state = "SEG4"
 
         # ── SEG4: CP3 → complete top-right U-turn → lane 5 south → Finish ─────
