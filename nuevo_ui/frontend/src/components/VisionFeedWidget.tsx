@@ -11,14 +11,14 @@
 import { useState, useEffect } from 'react'
 import { Video, VideoOff } from 'lucide-react'
 
-const REFRESH_MS = 250   // how often to reload the image
+const REFRESH_MS = 500   // how often to reload the image
 const STATUS_MS  = 2000  // how often to poll /vision/status
 const STALE_S    = 3     // image older than this → "stale"
 
 export function VisionFeedWidget() {
   const [visible, setVisible] = useState(false)
   const [tick, setTick]       = useState(0)
-  const [imgError, setImgError] = useState(false)
+  const [hasLoaded, setHasLoaded] = useState(false)
   const [live, setLive]       = useState(false)
 
   // Refresh image src by bumping tick
@@ -51,8 +51,12 @@ export function VisionFeedWidget() {
 
   const toggle = () => {
     setVisible((v) => !v)
-    setImgError(false)
   }
+
+  // Show fallback only before the first successful load AND when the status
+  // endpoint says nothing is available. Once we've shown a frame, keep the
+  // <img> mounted so transient 404s don't blank the widget.
+  const showFallback = !hasLoaded && !live
 
   return (
     <div className="rounded-xl backdrop-blur-xl bg-white/5 border border-white/10 overflow-hidden">
@@ -88,7 +92,7 @@ export function VisionFeedWidget() {
       {/* Feed */}
       {visible && (
         <div className="px-2 pb-2">
-          {imgError ? (
+          {showFallback ? (
             <div className="flex flex-col items-center justify-center h-28 rounded-lg bg-black/30 gap-1">
               <span className="text-xs text-white/30">No vision signal</span>
               <span className="text-[10px] text-white/20">
@@ -97,12 +101,10 @@ export function VisionFeedWidget() {
             </div>
           ) : (
             <img
-              key={tick}
               src={`/vision/latest.jpg?t=${tick}`}
               alt="Vision detections"
               className="w-full rounded-lg object-contain bg-black/40"
-              onError={() => setImgError(true)}
-              onLoad={() => setImgError(false)}
+              onLoad={() => setHasLoaded(true)}
             />
           )}
         </div>
