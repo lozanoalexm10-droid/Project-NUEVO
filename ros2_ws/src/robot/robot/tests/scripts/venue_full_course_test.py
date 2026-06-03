@@ -36,6 +36,8 @@ AUTO_START    = True  # True = 3-second countdown; False = green-light trigger (
 import math
 import time
 
+import numpy as np
+
 from robot.hardware_map import (
     Button,
     DCPidLoop,
@@ -46,6 +48,7 @@ from robot.hardware_map import (
     POSITION_UNIT,
     RIGHT_WHEEL_DIR_INVERTED,
     RIGHT_WHEEL_MOTOR,
+    StepMoveType,
     TAG_ID,
     VELOCITY_KD,
     VELOCITY_KI,
@@ -54,7 +57,20 @@ from robot.hardware_map import (
     WHEEL_DIAMETER,
 )
 from robot.robot import FirmwareState, Robot
+from robot.tests.scripts._manipulator_config import (
+    CAMPAN_ACCELERATION,
+    CAMPAN_MAX_VELOCITY,
+    CAMPAN_SETTLE_S,
+    CAMPAN_STEPPER,
+    campan_deg_to_steps,
+)
 from robot.util import densify_polyline
+
+# ── Lidar pose reset ──────────────────────────────────────────────────────────
+BACK_RIGHT_CORNER_ABS = (2745.0, 3965.0)  # NE corner (north wall × east wall), absolute frame (mm)
+
+# ── Camera pan for traffic-light detection ────────────────────────────────────
+GREEN_LIGHT_CAMPAN_DEG = -30.0  # camera pan angle while watching for green light
 
 # ── Nav tuning ─────────────────────────────────────────────────────────────────
 MIN_TRAFFIC_CONF  = 0.50
@@ -259,6 +275,73 @@ def _traffic_light_color(robot: Robot) -> str | None:
     return best_color
 
 
+def _lidar_wall_pose_reset(
+    robot: Robot,
+    ox: float,
+    oy: float,
+    corner_abs: tuple[float, float] = BACK_RIGHT_CORNER_ABS,
+) -> tuple[float, float, float] | None:
+    """
+    Sample the lidar, detect the north wall and NE corner, and return a corrected
+    absolute pose (abs_x_mm, abs_y_mm, heading_deg) or None if detection fails.
+
+    The north wall appears as a horizontal row of points near y = corner_abs[1].
+    Fitting a line to those points gives heading error (from any tilt) and the
+    true wall y-position.  The rightmost cluster near corner_abs gives the x fix.
+    """
+    cx, cy = corner_abs
+
+    odom_x, odom_y, theta_r = robot.get_odometry_pose()
+    abs_x = odom_x + ox
+    abs_y = odom_y + oy
+
+    raw = robot.get_obstacles()   # robot-frame mm (same unit scale = 1 for mm)
+    if not raw:
+        print("[LIDAR] No scan data — skipping pose reset")
+        return None
+    pts = np.array(raw, dtype=float)   # (N, 2)
+
+    # Approximate robot→world transform using current (noisy) heading
+    ct, st = math.cos(theta_r), math.sin(theta_r)
+    wx = abs_x + pts[:, 0] * ct - pts[:, 1] * st
+    wy = abs_y + pts[:, 0] * st + pts[:, 1] * ct
+
+    # Isolate north-wall candidates: within 500 mm of the wall y, west of east wall
+    wall_mask = (wy > cy - 500.0) & (wx < cx + 150.0)
+    if int(wall_mask.sum()) < 8:
+        print(f"[LIDAR] Only {wall_mask.sum()} north-wall points — skipping")
+        return None
+
+    wall_wx = wx[wall_mask]
+    wall_wy = wy[wall_mask]
+
+    # Line fit: wy = m*wx + b  (true wall is horizontal → m ≈ 0)
+    m, b = np.polyfit(wall_wx, wall_wy, 1)
+
+    # Heading correction from wall tilt
+    corrected_theta_deg = math.degrees(theta_r - math.atan(float(m)))
+
+    # Y correction: fitted wall at robot x vs. true wall y = cy
+    fitted_y = float(b) + float(m) * abs_x
+    corrected_abs_y = abs_y + (cy - fitted_y)
+
+    # X correction: use wall point closest to NE corner
+    d = np.sqrt((wall_wx - cx) ** 2 + (wall_wy - cy) ** 2)
+    nearest = int(np.argmin(d))
+    if float(d[nearest]) < 500.0:
+        corrected_abs_x = abs_x + (cx - float(wall_wx[nearest]))
+        print(f"[LIDAR] Corner at ({wall_wx[nearest]:.0f},{wall_wy[nearest]:.0f}) — x corrected by {cx - float(wall_wx[nearest]):.0f} mm")
+    else:
+        corrected_abs_x = abs_x
+        print(f"[LIDAR] Corner not resolved ({d[nearest]:.0f} mm away) — x unchanged")
+
+    print(
+        f"[LIDAR] Pose: ({abs_x:.0f},{abs_y:.0f}) θ={math.degrees(theta_r):.1f}° "
+        f"→ ({corrected_abs_x:.0f},{corrected_abs_y:.0f}) θ={corrected_theta_deg:.1f}°"
+    )
+    return corrected_abs_x, corrected_abs_y, corrected_theta_deg
+
+
 def _estop(robot: Robot) -> None:
     robot.stop()
     robot.shutdown()
@@ -286,6 +369,14 @@ def run(robot: Robot) -> None:  # noqa: C901
         _load_path(robot, _op(SEG3_APPROACH_PATH), SEG3A_CFG, obstacle_avoidance=False)
     elif START_SEGMENT == 4:
         _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
+
+    if not AUTO_START:
+        robot.step_set_config(CAMPAN_STEPPER, CAMPAN_MAX_VELOCITY, CAMPAN_ACCELERATION)
+        robot.step_enable(CAMPAN_STEPPER)
+        robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
+                        StepMoveType.ABSOLUTE, timeout=3.0)
+        time.sleep(CAMPAN_SETTLE_S)
+        print(f"[FSM] Camera panned to {GREEN_LIGHT_CAMPAN_DEG}° for traffic-light detection.")
 
     print(f"[FSM] Ready. START_SEGMENT={START_SEGMENT}  AUTO_START={AUTO_START}")
     print(f"[FSM] Course offset: ox={ox} oy={oy} theta={theta}°")
@@ -377,7 +468,21 @@ def run(robot: Robot) -> None:  # noqa: C901
                     _load_path(robot, _op(SEG3_OBS_PATH), SEG3B_CFG, obstacle_avoidance=True, x_L=x_L_obs)
                     seg3_phase = "obstacle"
                 elif seg3_phase == "obstacle":
-                    print("[FSM] SEG3 obstacle zone done — exiting to CP3.")
+                    print("[FSM] SEG3 obstacle zone done — lidar pose reset before exit turn.")
+                    robot.stop()
+                    time.sleep(0.3)
+                    result = _lidar_wall_pose_reset(robot, ox, oy)
+                    if result is not None:
+                        new_ax, new_ay, new_td = result
+                        robot.set_initial_theta(new_td)
+                        robot.reset_odometry()
+                        if not robot.wait_for_odometry_reset(timeout=3.0):
+                            print("[WARN] Odometry reset not confirmed — pose may be stale")
+                            robot.wait_for_pose_update(timeout=1.0)
+                        ox, oy = new_ax, new_ay
+                        print(f"[FSM] Origin reset to abs ({new_ax:.0f},{new_ay:.0f}) θ={new_td:.1f}°")
+                    else:
+                        print("[WARN] Lidar pose reset failed — proceeding with odometry estimate")
                     _load_path(robot, _op(SEG3_EXIT_PATH), SEG3C_CFG, obstacle_avoidance=False)
                     seg3_phase = "exit"
                 elif seg3_phase == "exit":
