@@ -36,8 +36,8 @@ def turntable_deg_to_steps(degrees: float) -> int:
 SHOULDER_CHANNEL     = ServoChannel.CH_16
 SHOULDER_STOW_DEG    = 90.0                 # safe resting position
 SHOULDER_UP_DEG      = 60.0                 # raised for reach
-SHOULDER_SAFE_MIN    = 30.0                 # hard mechanical limit — do not exceed
-SHOULDER_SAFE_MAX    = 150.0
+SHOULDER_SAFE_MIN    = 75.0                 # hard mechanical limit — do not exceed
+SHOULDER_SAFE_MAX    = 180.0
 
 # ── Elbow ─────────────────────────────────────────────────────────────────────
 ELBOW_CHANNEL        = ServoChannel.CH_15
@@ -217,7 +217,7 @@ MIN_CONFIDENCE_PLATE         = 0.70
 MIN_CONFIDENCE_CUP           = 0.50
 
 # Cup geometry — used for pinhole distance estimate and cup-mallow bearing match.
-CUP_DIAMETER_MM              = 95.0           # top rim outer diameter of a standard red Solo cup (mm)
+CUP_DIAMETER_MM              = 65.0           # top rim outer diameter of a standard red Solo cup (mm)
 MALLOW_CUP_BEARING_MATCH_DEG = 10.0           # max bearing separation to pair a mallow with a cup
 
 # ── Competition sequence timing ───────────────────────────────────────────────
