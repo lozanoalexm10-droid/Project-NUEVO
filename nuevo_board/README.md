@@ -4,9 +4,9 @@
 **Board Revision:** Rev. B
 **Design Status:** Designed and fabricated (awaiting delivery and testing)
 **Last Updated:** 2026-02-13
-
+ 
 ---
-
+ 
 ## Overview
 
 The NUEVO Board is the main controller board for the MAE 162 educational robotics platform. It integrates power management, motor control interfaces, and communication between the Arduino Mega 2560 microcontroller and Raspberry Pi 5.

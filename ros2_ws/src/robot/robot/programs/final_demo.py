@@ -47,7 +47,6 @@ import time
 from robot.arm_kinematics import OutOfReachError, inverse_kinematics
 from robot.hardware_map import (
     Button,
-    DCMotorMode,
     DCPidLoop,
     DEFAULT_FSM_HZ,
     INITIAL_THETA_DEG,
@@ -92,9 +91,7 @@ from robot.tests.scripts._manipulator_config import (
     GRIPPER_CLOSE_DEG,
     GRIPPER_OPEN_DEG,
     GRIPPER_ROAST_DEG,
-    HEATING_WIRE_MOTOR_ID,
-    HEATING_WIRE_PWM_OFF,
-    HEATING_WIRE_PWM_ON,
+    HEATING_WIRE_GPIO_PIN,
     MALLOW_CUP_BEARING_MATCH_DEG,
     MARSHMALLOW_CLASS,
     MARSHMALLOW_DIAMETER_MM,
@@ -381,6 +378,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 print("[warn] odometry reset not confirmed within 2.0s; continuing with latest pose")
                 robot.wait_for_pose_update(timeout=0.5)
             robot.enable_vision()
+            robot.enable_relay(HEATING_WIRE_GPIO_PIN)   # GPIO open, relay off (safe)
             _start_path_segment(robot, PRE_OBSTACLE_PATH, obstacle_avoidance=False)
             print("[FSM] INIT complete — entering IDLE. Waiting for green traffic light (or BTN_1 to override).")
             state = "IDLE"
@@ -723,8 +721,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_ROAST_DEG)
             time.sleep(0.3)
             print("[FSM] PLACING — marshmallow released onto plate.")
-            robot.enable_motor(HEATING_WIRE_MOTOR_ID, DCMotorMode.PWM)
-            robot.set_motor_pwm(HEATING_WIRE_MOTOR_ID, HEATING_WIRE_PWM_ON)
+            robot.set_relay(True)
             print(f"[FSM] ROASTING — heating wire ON for {ROAST_TIME_S:.1f}s")
             state = "ROASTING"
             state_entry_time = time.monotonic()
@@ -732,8 +729,8 @@ def run(robot: Robot) -> None:  # noqa: C901
         # ── ROASTING ──────────────────────────────────────────────────────────
         elif state == "ROASTING":
             if time.monotonic() - state_entry_time >= ROAST_TIME_S:
-                robot.set_motor_pwm(HEATING_WIRE_MOTOR_ID, HEATING_WIRE_PWM_OFF)
-                robot.disable_motor(HEATING_WIRE_MOTOR_ID)
+                robot.set_relay(False)
+                robot.disable_relay()
                 print("[FSM] ROASTING — wire off. Restowing arm.")
                 state = "RESTOWING"
                 state_entry_time = time.monotonic()

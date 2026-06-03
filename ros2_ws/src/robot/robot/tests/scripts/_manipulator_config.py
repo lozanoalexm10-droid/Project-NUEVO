@@ -76,7 +76,7 @@ CAMPAN_MICROSTEP        = 1               # no microstepping — DRV8825 M0/M1/M
 CAMPAN_PULLEY_RATIO     = 1.0             # direct drive — no belt or pulley
 CAMPAN_MAX_VELOCITY     = 200             # steps/sec (output shaft) — conservative for 28BYJ-48 low torque
 CAMPAN_ACCELERATION     = 100             # steps/sec² (output shaft)
-CAMPAN_POSITIONS_DEG    = [-60.0, 0.0, 60.0]   # left → center → right (CCW negative = left)
+CAMPAN_POSITIONS_DEG    = [-66.0, 0.0, 66.0]   # left → center → right (CCW negative = left)
 CAMPAN_SETTLE_S         = 0.3             # seconds to wait after panning before capturing
 
 STEPS_PER_CAMPAN_DEG = (CAMPAN_STEPS_PER_REV * CAMPAN_MICROSTEP * CAMPAN_PULLEY_RATIO) / 360.0
@@ -90,22 +90,20 @@ ULTRASONIC_FOREARM_OFFSET_MM = 215.0    # TODO: distance from elbow pivot to sen
 ULTRASONIC_HEIGHT_OFFSET_MM  = 29.0    # TODO: sensor height above forearm centerline (+ = above)
 
 # ── Arm geometry (measure from physical robot, all in mm) ─────────────────────
-# TODO: replace placeholder values with physical measurements before using IK.
 ARM_L1_MM               = 156.0    # upper arm: shoulder pivot → elbow pivot
-ARM_L2_MM               = 304.0    # forearm:   elbow pivot   → gripper end where grabbing happens
-ARM_SHOULDER_HEIGHT_MM  = 95.5    # shoulder pivot height above robot base plate (measured)
+ARM_L2_MM               = 315.0    # forearm:   elbow pivot   → gripper end where grabbing happens
+ARM_SHOULDER_HEIGHT_MM  = 95.0    # shoulder pivot height above robot base plate (measured)
 ARM_SHOULDER_OFFSET_MM  = 14.0    # forward distance from turntable axis to shoulder pivot (~1 inch — measure)
 
 # Distance from turntable rotation axis to the front face of the robot chassis (mm).
-# TODO: measure on physical robot (currently set to 4 in = 101.6 mm).
-ROBOT_FRONT_TO_TURNTABLE_MM = 101.6
+ROBOT_FRONT_TO_TURNTABLE_MM = 67.0
 
 # How far the camera/campan axis sits forward of the front chassis face (mm).
 # camera_forward_offset_mm = ROBOT_FRONT_TO_TURNTABLE_MM + CAMERA_PROTRUSION_MM.
 # Used by detection_to_robot_frame() to translate camera distances into
 # turntable-axis coordinates for IK.  A marshmallow 6 in (152 mm) from the
 # camera is (152 + CAMERA_FORWARD_OFFSET_MM) from the turntable axis.
-CAMERA_PROTRUSION_MM        = 96.0
+CAMERA_PROTRUSION_MM        = 142.0
 CAMERA_FORWARD_OFFSET_MM    = ROBOT_FRONT_TO_TURNTABLE_MM + CAMERA_PROTRUSION_MM
 
 # Servo calibration — run arm_ik_calibration_test.py to determine these values.
@@ -176,13 +174,12 @@ CAMERA_HFOV_DEG          = 62.0    # TODO: verify for your specific lens
 # Height of the camera lens above the robot base plate (mm).
 # Used to convert bounding-box elevation angle + distance into target height.
 # Measure: hold a ruler from the base plate up to the camera lens centerline.
-# TODO: measure on physical robot.
-CAMERA_HEIGHT_MM         = 150.0
+CAMERA_HEIGHT_MM         = -40.0
 
 # Physical diameter of a standard large marshmallow (~1.5 in / 38 mm).
 # Used in the pinhole distance estimate: dist_mm = (MARSHMALLOW_DIAMETER_MM * focal_px) / px_diameter
 # Measure your actual marshmallow and update if needed.
-MARSHMALLOW_DIAMETER_MM  = 38.0
+MARSHMALLOW_DIAMETER_MM  = 25.0
 MARSHMALLOW_RADIUS_MM    = MARSHMALLOW_DIAMETER_MM / 2.0  # center-height above support surface
 
 # ── Red Solo cup height tiers ──────────────────────────────────────────────────
@@ -210,8 +207,6 @@ def snap_to_cup_tier_mm(height_mm: float) -> float:
 
 # ── Detection ─────────────────────────────────────────────────────────────────
 MARSHMALLOW_CLASS        = "marshmallow"      # class name from vision model
-ROASTING_STICK_CLASS     = "roasting_stick"   # TODO: confirm class name with vision team
-PLATE_CLASS              = "plate"            # TODO: confirm class name with vision team
 CUP_CLASS                = "red_cup"          # class name from rule_based_detection.detect_red_cup
 
 # Per-class confidence thresholds — tune independently during vision testing.

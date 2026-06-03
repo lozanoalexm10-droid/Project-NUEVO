@@ -81,11 +81,40 @@ Without this, `enable_gps()` and `set_tracked_tag_id()` will have no data.
 
 ---
 
-### Optional — Vision node (required for detection, traffic light, and manipulator tests)
+### Terminal 4 — Vision node (required for detection, traffic light, and manipulator tests)
 
+The vision node must be started **after** `everything_but_robot.launch.py` and **before**
+`robot.launch.py` for any test that uses `enable_vision()`, `get_detections()`, traffic
+lights, stop signs, or the marshmallow picker.
+
+**Debug mode** (saves annotated `latest.jpg` → NUEVO UI Vision Feed, 1 fps):
 ```bash
-ros2 run vision vision
+ros2 launch vision vision_debug.launch.py
 ```
+
+**Production mode** (no disk writes, lowest CPU):
+```bash
+ros2 launch vision vision_production.launch.py
+```
+
+Both launch files use `/dev/video10` (V4L2 loopback from `pi-camera-feed.service`).
+If the node logs `select() timeout` or "waiting for camera", restart the camera service:
+```bash
+sudo systemctl restart pi-camera-feed
+```
+Then re-launch the vision node.
+
+**Full startup order (summary):**
+
+| Step | Terminal | Command |
+|---|---|---|
+| 1 | T1 | `docker compose -f ros2_ws/docker/docker-compose.rpi.yml up -d && ... logs -f ros2_runtime` |
+| 2 | T2 | `... exec ros2_runtime bash` → source → `ros2 launch robot everything_but_robot.launch.py` |
+| 3 | T3 | `... exec ros2_runtime bash` → source → `ros2 launch vision vision_debug.launch.py` |
+| 4 | T4 | `... exec ros2_runtime bash` → source → `ros2 launch robot robot.launch.py` |
+
+Steps 2 and 3 can be done in either order. Step 4 (robot node) must always be last
+because it resets odometry on startup.
 
 ---
 
