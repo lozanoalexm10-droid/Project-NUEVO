@@ -208,10 +208,13 @@ function Dashboard() {
 
           {/* Sensor Panels — px-8 matches the PCB card's internal padding so columns align */}
           <div className="max-w-[1600px] mx-auto px-8">
+            {/* Vision feed gets its own wider row so the live image is easy to read */}
+            <div className="mb-4 md:max-w-3xl">
+              <VisionFeedWidget />
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-8 gap-4">
               <div className="md:col-span-2 space-y-3">
                 <h3 className="text-sm font-semibold text-white/60 uppercase tracking-wider">RPi Sensors</h3>
-                <VisionFeedWidget />
                 <CameraWidget />
                 <WorldCanvas />
                 <GpsStatusCard />

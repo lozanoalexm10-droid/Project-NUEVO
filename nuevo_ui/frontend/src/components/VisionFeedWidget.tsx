@@ -93,7 +93,7 @@ export function VisionFeedWidget() {
       {visible && (
         <div className="px-2 pb-2">
           {showFallback ? (
-            <div className="flex flex-col items-center justify-center h-28 rounded-lg bg-black/30 gap-1">
+            <div className="flex flex-col items-center justify-center aspect-video min-h-64 rounded-lg bg-black/30 gap-1">
               <span className="text-xs text-white/30">No vision signal</span>
               <span className="text-[10px] text-white/20">
                 Start vision node with debug_save_enabled:=true
@@ -103,7 +103,7 @@ export function VisionFeedWidget() {
             <img
               src={`/vision/latest.jpg?t=${tick}`}
               alt="Vision detections"
-              className="w-full rounded-lg object-contain bg-black/40"
+              className="w-full max-h-[70vh] rounded-lg object-contain bg-black/40"
               onLoad={() => setHasLoaded(true)}
             />
           )}
