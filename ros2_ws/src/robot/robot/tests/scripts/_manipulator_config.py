@@ -111,9 +111,9 @@ CAMERA_FORWARD_OFFSET_MM    = ROBOT_FRONT_TO_TURNTABLE_MM + CAMERA_PROTRUSION_MM
 # shoulder_servo_sign:   +1 if higher servo angle raises the arm, -1 if it lowers it
 # elbow_servo_offset:    servo angle (deg) when arm is fully straight (geometric 180°)
 # elbow_servo_sign:      +1 if higher servo angle opens the elbow
-SHOULDER_SERVO_OFFSET   = 90.0     # TODO: calibrate
-SHOULDER_SERVO_SIGN     = 1.0      # TODO: confirm direction
-ELBOW_SERVO_OFFSET      = 122.0    # servo angle when forearm is collinear with upper arm (fully straight)
+SHOULDER_SERVO_OFFSET   = 96.0     # servo angle when upper arm is horizontal forward
+SHOULDER_SERVO_SIGN     = 1.0      # higher servo angle raises the arm
+ELBOW_SERVO_OFFSET      = 90.0     # servo angle when forearm is collinear with upper arm (fully straight)
 ELBOW_SERVO_SIGN        = -1.0     # lower angle = forearm up (opens), higher angle = forearm down (closes)
 
 # Assembled geometry object — import this in programs and tests that use IK.
