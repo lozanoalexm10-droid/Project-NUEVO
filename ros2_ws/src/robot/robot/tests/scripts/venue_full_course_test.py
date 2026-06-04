@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1     # 1–4: segment to begin from; 1 = full course from start
-AUTO_START    = True  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
+AUTO_START    = False  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import math
@@ -267,7 +267,7 @@ def _traffic_light_color(robot: Robot) -> str | None:
     if not robot.is_vision_active(timeout_s=VISION_STALE_S):
         return None
     best_color, best_conf = None, -1.0
-    for det in robot.get_detections("traffic light"):
+    for det in robot.get_detections("traffic_light"):
         conf  = float(det["confidence"])
         color = det.get("attributes", {}).get("color", {}).get("value")
         if conf >= MIN_TRAFFIC_CONF and color in ("red", "green") and conf > best_conf:
@@ -373,6 +373,7 @@ def run(robot: Robot) -> None:  # noqa: C901
     if not AUTO_START:
         robot.step_set_config(CAMPAN_STEPPER, CAMPAN_MAX_VELOCITY, CAMPAN_ACCELERATION)
         robot.step_enable(CAMPAN_STEPPER)
+        time.sleep(0.1)
         robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
                         StepMoveType.ABSOLUTE, timeout=3.0)
         time.sleep(CAMPAN_SETTLE_S)

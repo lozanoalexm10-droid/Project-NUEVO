@@ -146,7 +146,7 @@ def _find_traffic_light_color(robot: Robot) -> str | None:
         return None
     best_color = None
     best_conf  = -1.0
-    for det in robot.get_detections("traffic light"):
+    for det in robot.get_detections("traffic_light"):
         conf  = float(det["confidence"])
         color = det.get("attributes", {}).get("color", {}).get("value")
         if conf >= MIN_TRAFFIC_LIGHT_CONFIDENCE and color in ("red", "green") and conf > best_conf:
