@@ -141,6 +141,7 @@ S = SimpleNamespace(
     sweep_to=None,     # sweep end angle (deg);   default = joint safe max
     grab=False,        # go straight to the search pose and grab (no ultrasonic descent)
     grip=GRIPPER_GRAB_DEG,  # gripper close angle for the grab (higher = tighter)
+    hold_s=120.0,      # after a --grab, keep re-commanding the grip for this long
 )
 
 
@@ -417,6 +418,24 @@ def run(robot: Robot) -> None:  # noqa: C901 — the pipeline is intentionally l
             shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, ARM_CARRY_SHOULDER_DEG,
                                        SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
             print("[PICK] GRAB complete — marshmallow gripped, arm at carry pose.")
+
+            # ── HOLD: keep the process alive and re-assert the grip ───────────
+            # The grip relaxed after the script exited in earlier runs. Whether
+            # that is the firmware actuator watchdog (HEARTBEAT_TIMEOUT_MS) or the
+            # servo needing a refresh, actively re-commanding the gripper (and
+            # re-enabling it) every cycle keeps it clamped for as long as we run.
+            if S.hold_s > 0:
+                print(f"[PICK] HOLD: maintaining grip at {S.grip}° for {S.hold_s:.0f}s "
+                      f"(re-commanding). Ctrl-C to release early.")
+                hold_deadline = time.monotonic() + S.hold_s
+                try:
+                    while time.monotonic() < hold_deadline:
+                        robot.enable_servo(GRIPPER_CHANNEL)
+                        robot.set_servo(GRIPPER_CHANNEL, S.grip)
+                        time.sleep(0.4)
+                except KeyboardInterrupt:
+                    print("[PICK] HOLD interrupted by Ctrl-C.")
+                print("[PICK] HOLD period ended — grip will relax once this process exits.")
             return
 
         # ── 9. Approach with ultrasonic feedback ──────────────────────────────
@@ -518,6 +537,9 @@ def _parse_args(argv=None):
                         "(open→grab→lift), with NO ultrasonic descent. Use once the pose is known.")
     p.add_argument("--grip", type=float, default=GRIPPER_GRAB_DEG,
                    help="Gripper close angle for the grab (deg; higher = tighter hold).")
+    p.add_argument("--hold-s", type=float, default=120.0,
+                   help="After --grab, keep the process alive and re-command the grip "
+                        "for this many seconds so it stays closed (0 = exit immediately).")
     return p.parse_args(argv)
 
 
@@ -545,6 +567,7 @@ def main() -> None:
     S.sweep_to = args.sweep_to
     S.grab = args.grab
     S.grip = args.grip
+    S.hold_s = args.hold_s
 
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node("marshmallow_pick")

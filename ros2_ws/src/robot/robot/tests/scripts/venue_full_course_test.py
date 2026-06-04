@@ -70,7 +70,7 @@ from robot.util import densify_polyline
 BACK_RIGHT_CORNER_ABS = (2745.0, 3965.0)  # NE corner (north wall × east wall), absolute frame (mm)
 
 # ── Camera pan for traffic-light detection ────────────────────────────────────
-GREEN_LIGHT_CAMPAN_DEG = -30.0  # camera pan angle while watching for green light
+GREEN_LIGHT_CAMPAN_DEG = 30.0  # camera pan angle while watching for green light (left)
 
 # ── Nav tuning ─────────────────────────────────────────────────────────────────
 MIN_TRAFFIC_CONF  = 0.50

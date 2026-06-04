@@ -21,6 +21,7 @@ from vision.rule_based_detection import (
     detect_marshmallow,
     detect_red_cup,
     detect_yellow_block,
+    filter_marshmallows_on_red_cups,
 )
 from vision.stop_sign import classify_stop_sign_visibility
 from vision.timing_utils import FixedRateScheduler
@@ -223,6 +224,9 @@ class VisionNode(Node):
                 yellow_block_detections, yellow_block_overlays = self._detect_yellow_block(frame)
                 marshmallow_detections, marshmallow_overlays   = self._detect_marshmallow(frame)
                 red_cup_detections, red_cup_overlays           = self._detect_red_cup(frame)
+                marshmallow_detections, marshmallow_overlays = filter_marshmallows_on_red_cups(
+                    marshmallow_detections, marshmallow_overlays, red_cup_detections
+                )
 
                 for detection in yolo_detections:
                     object_crop = frame[

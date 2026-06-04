@@ -246,3 +246,39 @@ def _red_cup_score(contour_area: float, min_area_px: int, fill_ratio: float) -> 
     area_score = min(1.0, contour_area / float(max(1, min_area_px * 5)))
     fill_score = max(0.0, min(1.0, fill_ratio))
     return max(0.0, min(1.0, 0.60 * area_score + 0.40 * fill_score))
+
+
+def filter_marshmallows_on_red_cups(
+    marshmallow_detections: list[DetectedObject],
+    marshmallow_overlays: list[DebugOverlay],
+    red_cup_detections: list[DetectedObject],
+) -> tuple[list[DetectedObject], list[DebugOverlay]]:
+    """Keep only marshmallows positioned on top of a red cup.
+
+    A marshmallow qualifies when its horizontal center sits inside some cup's
+    horizontal extent and its vertical center is at or above the cup's upper
+    third — the slack lets a marshmallow rest in the cup rim instead of
+    needing to float perfectly above the top edge. Drops background whites
+    (ceiling, paper, walls) that pass the color/shape filter but are not on
+    a cup.
+    """
+    if not red_cup_detections or not marshmallow_detections:
+        return [], []
+
+    kept_detections: list[DetectedObject] = []
+    kept_overlays: list[DebugOverlay] = []
+    for detection, overlay in zip(marshmallow_detections, marshmallow_overlays):
+        m_center_x = detection.x + detection.width / 2.0
+        m_center_y = detection.y + detection.height / 2.0
+        for cup in red_cup_detections:
+            cup_left = cup.x
+            cup_right = cup.x + cup.width
+            cup_upper_third = cup.y + cup.height / 3.0
+            if not (cup_left <= m_center_x <= cup_right):
+                continue
+            if m_center_y > cup_upper_third:
+                continue
+            kept_detections.append(detection)
+            kept_overlays.append(overlay)
+            break
+    return kept_detections, kept_overlays
