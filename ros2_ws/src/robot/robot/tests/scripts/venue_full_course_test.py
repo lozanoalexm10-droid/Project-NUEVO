@@ -88,7 +88,11 @@ STOP_SIGN_DWELL_S = 3.0
 SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
 SEG2_CFG  = dict(speed=120, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
-SEG3B_CFG = dict(speed=90,  lookahead=100, spacing=400, safe_dist=150, lane_width=400, avoidance_delay=250)
+SEG3B_CFG = dict(
+    speed=75, lookahead=115, spacing=400,
+    safe_dist=181, lane_width=451, avoidance_delay=245,
+    obstacles_range=450, view_angle=70.0, alpha_Ld=0.70, offset=324,
+)
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
 SEG4_CFG  = dict(speed=120, lookahead=300, spacing=50)
 
@@ -233,13 +237,13 @@ def _load_path(
             max_linear_speed=cfg["speed"],
             max_angular_speed=1.0,
             goal_tolerance=30.0,
-            obstacles_range=550.0,
-            view_angle=math.radians(65.0),
-            safe_dist=float(cfg.get("safe_dist", 360.0)),
-            avoidance_delay=int(cfg.get("avoidance_delay", 420)),
-            alpha_Ld=1.3,
-            offset=250.0,
-            lane_width=float(cfg.get("lane_width", 360.0)),
+            obstacles_range=float(cfg.get("obstacles_range", 450.0)),
+            view_angle=math.radians(float(cfg.get("view_angle", 70.0))),
+            safe_dist=float(cfg.get("safe_dist", 181.0)),
+            avoidance_delay=int(cfg.get("avoidance_delay", 245)),
+            alpha_Ld=float(cfg.get("alpha_Ld", 0.70)),
+            offset=float(cfg.get("offset", 324.0)),
+            lane_width=float(cfg.get("lane_width", 451.0)),
             obstacle_avoidance=True,
             x_L=x_L,
         )
