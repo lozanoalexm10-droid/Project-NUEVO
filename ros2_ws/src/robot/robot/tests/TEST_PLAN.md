@@ -72,12 +72,17 @@ Open another container shell and run:
 ros2 launch robot everything_but_robot.launch.py
 ```
 
-Starts two nodes together:
+Starts three nodes together:
 - **rplidar** — LiDAR scan data for obstacle avoidance
 - **robot_gps** — connects to the lab Jetson over TCP, receives ArUco tag detections,
   republishes them as `/tag_detections` for position fusion
+- **lidar_renderer** — subscribes to `/scan` and writes a top-down PNG to
+  `/runtime_output/lidar/latest.png` once per second; served by the backend at
+  `/lidar/latest.png` and displayed in the NUEVO UI **LiDAR Scan** widget
+  (RPi Sensors column → click to expand → updates every 3 s)
 
 Without this, `enable_gps()` and `set_tracked_tag_id()` will have no data.
+The LiDAR Scan widget will show "No LiDAR signal" if `everything_but_robot` is not running.
 
 ---
 
