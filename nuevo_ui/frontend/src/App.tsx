@@ -13,7 +13,6 @@ import { WorldCanvas } from './components/WorldCanvas';
 import { GpsStatusCard } from './components/GpsStatusCard';
 import { RosNodesCard } from './components/RosNodesCard';
 import { CameraWidget } from './components/CameraWidget'
-import { LidarWidget } from './components/LidarWidget'
 import { VisionFeedWidget } from './components/VisionFeedWidget';
 import { TagsPanel } from './components/TagsPanel';
 import { LoginPage } from './components/LoginPage';
@@ -217,7 +216,6 @@ function Dashboard() {
               <div className="md:col-span-2 space-y-3">
                 <h3 className="text-sm font-semibold text-white/60 uppercase tracking-wider">RPi Sensors</h3>
                 <CameraWidget />
-                <LidarWidget />
                 <WorldCanvas />
                 <GpsStatusCard />
                 <TagsPanel />

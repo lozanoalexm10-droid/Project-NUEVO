@@ -20,10 +20,6 @@ _VISION_LATEST = os.environ.get(
     "NUEVO_VISION_OUTPUT_DIR", "/runtime_output/vision"
 ) + "/latest.jpg"
 
-_LIDAR_LATEST = os.environ.get(
-    "NUEVO_LIDAR_OUTPUT_DIR", "/runtime_output/lidar"
-) + "/latest.png"
-
 
 def create_app(runtime: Optional[BridgeRuntime] = None) -> FastAPI:
     runtime = runtime or BridgeRuntime()
@@ -81,23 +77,6 @@ def create_app(runtime: Optional[BridgeRuntime] = None) -> FastAPI:
         if not os.path.exists(_VISION_LATEST):
             return {"available": False}
         age_s = time.time() - os.path.getmtime(_VISION_LATEST)
-        return {"available": True, "age_s": round(age_s, 1)}
-
-    @app.get("/lidar/latest.png")
-    async def lidar_latest_png():
-        if not os.path.exists(_LIDAR_LATEST):
-            return JSONResponse({"error": "no image"}, status_code=404)
-        return FileResponse(
-            _LIDAR_LATEST,
-            media_type="image/png",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
-        )
-
-    @app.get("/lidar/status")
-    async def lidar_status():
-        if not os.path.exists(_LIDAR_LATEST):
-            return {"available": False}
-        age_s = time.time() - os.path.getmtime(_LIDAR_LATEST)
         return {"available": True, "age_s": round(age_s, 1)}
 
     static_dir = os.path.join(os.path.dirname(__file__), "..", "static")

@@ -36,10 +36,4 @@ def generate_launch_description():
                 )
             ),
         ),
-        Node(
-            package="robot",
-            executable="lidar_renderer",
-            name="lidar_renderer",
-            output="screen",
-        ),
     ])
