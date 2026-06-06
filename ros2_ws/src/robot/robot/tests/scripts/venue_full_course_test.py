@@ -30,7 +30,8 @@ from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1     # 1–4: segment to begin from; 1 = full course from start
-AUTO_START    = True  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
+AUTO_START    = True
+  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import math
@@ -71,6 +72,11 @@ GREEN_LIGHT_CAMPAN_DEG = 30.0  # camera pan angle while watching for green light
 MIN_TRAFFIC_CONF  = 0.50
 VISION_STALE_S    = 3.0
 STOP_SIGN_DWELL_S = 3.0
+# Min stop-sign bbox height as a fraction of the frame height before we
+# accept the detection. Apparent size grows ~linearly with 1/distance, so a
+# larger value forces the robot to approach further before pausing.
+STOP_SIGN_MIN_FRAC = 0.18
+STOP_SIGN_MIN_CONF = 0.50
 
 # Per-segment tuning — adjust speed (mm/s) and lookahead (mm) here.
 # Larger lookahead = wider, earlier turns = less corner overshoot.
@@ -79,7 +85,8 @@ STOP_SIGN_DWELL_S = 3.0
 #   SEG3A : east approach to obstacle zone
 #   SEG3B : north through obstacle zone (avoidance ON)
 #   SEG3C : finish north run + 90° right turn + east to CP3 (avoidance OFF)
-#   SEG4  : top-right U-turn → lane 5 → finish
+#   SEG4A : CP3 → 90° right-turn corner onto lane 5 (normal speed)
+#   SEG4B : lane 5 south → finish (slow speed — bump zone)
 SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
 SEG2_CFG  = dict(speed=130, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
@@ -89,7 +96,11 @@ SEG3B_CFG = dict(
     obstacles_range=450, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
-SEG4_CFG  = dict(speed=120, lookahead=300, spacing=50)
+SEG4A_CFG = dict(speed=120, lookahead=300, spacing=50)
+# Bump-zone speed: lane 5 has ~155 mm speed bumps placed randomly so single
+# tires strike them — slow here so impacts are gentler and GPS fusion has
+# more time to correct any push-induced drift.
+SEG4B_CFG = dict(speed=70,  lookahead=250, spacing=50)
 
 # ── Course geometry (mm, absolute odometry frame, x=east y=north) ─────────────
 X_LANE1   =    0.0    # lane 1 centre (robot start x)
@@ -101,8 +112,8 @@ Y_START   =    -160.0    # course start y
 Y_TOP     = 3500.0    # far (north) end of course — top turns happen here
 Y_BOT     =  610.0    # near (south) end — bottom turns happen here
 
-FINISH_X  = 2440.0    # manipulation station x (lane 5)
-FINISH_Y  =  305.0    # manipulation station y
+FINISH_X  = 2440.0    # manipulation station x (lane 5) = 4 * 610
+FINISH_Y  =  280.0    # manipulation station y
 
 # Checkpoint coordinates — midpoints of the two 90° corners that form each U-turn.
 # These are the absolute course positions. When restarting at CP_N the robot is
@@ -167,9 +178,14 @@ SEG3_EXIT_PATH = [
 
 # Segment 4: CP3 → lane 5 south → manipulation station.
 #   Stop-sign detection active throughout. 3-second dwell on first detection.
-SEG4_PATH = [
+#   Split into A (corner approach, normal speed) and B (south straight — slow
+#   through the speed-bump zone).
+SEG4A_PATH = [
     (X_OBS_MID + 457.5, Y_TOP), # CP3
     (X_LANE5, Y_TOP),            # 90° right-turn corner (now south)
+]
+SEG4B_PATH = [
+    (X_LANE5, Y_TOP),            # corner (start of lane-5 south)
     (FINISH_X, FINISH_Y),        # manipulation station
 ]
 
@@ -268,7 +284,10 @@ def _traffic_light_color(robot: Robot) -> str | None:
     if not robot.is_vision_active(timeout_s=VISION_STALE_S):
         return None
     best_color, best_conf = None, -1.0
-    for det in robot.get_detections("traffic_light"):
+    # NOTE: vision_node publishes class_name="traffic light" (with a space),
+    # not "traffic_light" — strict-equality match in get_detections means the
+    # underscored form silently returns nothing.
+    for det in robot.get_detections("traffic light"):
         conf  = float(det["confidence"])
         color = det.get("attributes", {}).get("color", {}).get("value")
         if conf >= MIN_TRAFFIC_CONF and color in ("red", "green") and conf > best_conf:
@@ -302,25 +321,33 @@ def run(robot: Robot) -> None:  # noqa: C901
     elif START_SEGMENT == 3:
         _load_path(robot, _op(SEG3_APPROACH_PATH), SEG3A_CFG, obstacle_avoidance=False)
     elif START_SEGMENT == 4:
-        _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
+        _load_path(robot, _op(SEG4A_PATH), SEG4A_CFG, obstacle_avoidance=False)
 
     if not AUTO_START:
         # Stepper API is fire-and-forget (publishes ROS msgs, no ack), so the
         # firmware needs a moment between config/enable and the first move —
         # otherwise pulses arrive before the driver is energized and the motor
-        # whirs without rotating. Give each stage time to land.
+        # whirs without rotating. Bounce disable→enable each attempt so the
+        # driver state machine starts clean, then retry up to 3 times if the
+        # move never reports motion.
+        target_steps = campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG)
         robot.step_set_config(CAMPAN_STEPPER, CAMPAN_MAX_VELOCITY, CAMPAN_ACCELERATION)
-        time.sleep(0.2)
-        robot.step_enable(CAMPAN_STEPPER)
-        time.sleep(0.5)
-        ok = robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
-                             StepMoveType.ABSOLUTE, timeout=3.0)
-        if not ok:
-            print("[WARN] CAMPAN pan-to-green-watch position timed out — retrying once.")
+        time.sleep(0.3)
+        moved = False
+        for attempt in range(1, 4):
+            robot.step_disable(CAMPAN_STEPPER)
+            time.sleep(0.2)
             robot.step_enable(CAMPAN_STEPPER)
-            time.sleep(0.5)
-            robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
-                            StepMoveType.ABSOLUTE, timeout=3.0)
+            time.sleep(0.6)
+            if robot.step_move(CAMPAN_STEPPER, target_steps,
+                               StepMoveType.ABSOLUTE, timeout=3.0):
+                moved = True
+                if attempt > 1:
+                    print(f"[FSM] CAMPAN move succeeded on attempt {attempt}.")
+                break
+            print(f"[WARN] CAMPAN move attempt {attempt} timed out — re-arming.")
+        if not moved:
+            print("[ERROR] CAMPAN failed to move after 3 attempts — continuing anyway.")
         time.sleep(CAMPAN_SETTLE_S)
         print(f"[FSM] Camera panned to {GREEN_LIGHT_CAMPAN_DEG}° for traffic-light detection.")
 
@@ -333,8 +360,10 @@ def run(robot: Robot) -> None:  # noqa: C901
                                    # was queuing set_velocity commands and stalling the
                                    # first move after green-light detection.
     seg3_phase: str = "approach"   # 'approach' | 'obstacle' | 'exit'
+    seg4_phase: str = "approach"   # 'approach' (to corner) | 'south' (bump zone)
     stop_sign_seen:    bool  = False
     stop_sign_pause_t: float = 0.0
+    idle_last_debug_t: float = 0.0   # rate-limit IDLE vision debug print
 
     def _start_segment() -> str:
         nonlocal idle_leds_set
@@ -384,6 +413,26 @@ def run(robot: Robot) -> None:  # noqa: C901
                     robot.set_led(LED.ORANGE, 0)
                     idle_leds_set = True
                 color = _traffic_light_color(robot)
+
+                # ── IDLE vision debug (rate-limited to ~1 Hz) ────────────
+                # Surfaces what the vision pipeline is actually publishing so a
+                # class-name mismatch or stale topic is immediately visible.
+                now_dbg = time.monotonic()
+                if now_dbg - idle_last_debug_t >= 1.0:
+                    idle_last_debug_t = now_dbg
+                    vision_active = robot.is_vision_active(timeout_s=VISION_STALE_S)
+                    all_dets = robot.get_detections()
+                    classes = sorted({str(d.get("class_name")) for d in all_dets})
+                    tl_dets = robot.get_detections("traffic light")
+                    tl_summary = ", ".join(
+                        f"{(d.get('attributes', {}).get('color', {}) or {}).get('value','?')}"
+                        f"@{float(d.get('confidence', 0.0)):.2f}"
+                        for d in tl_dets
+                    ) or "(none)"
+                    print(f"[IDLE] vision_active={vision_active} "
+                          f"classes={classes or '[]'} traffic_light=[{tl_summary}] "
+                          f"resolved_color={color}")
+
                 if color == "green":
                     print(f"[FSM] Green light — starting SEG{START_SEGMENT}.")
                     state = _start_segment()
@@ -442,7 +491,8 @@ def run(robot: Robot) -> None:  # noqa: C901
                 elif seg3_phase == "exit":
                     print(f"[FSM] SEG3 complete — CP3 reached at abs=({abs_x:.0f},{abs_y:.0f}) "
                           f"θ={math.degrees(pth):.1f}°.")
-                    _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
+                    _load_path(robot, _op(SEG4A_PATH), SEG4A_CFG, obstacle_avoidance=False)
+                    seg4_phase = "approach"
                     state = "SEG4"
 
         # ── SEG4: CP3 → complete top-right U-turn → lane 5 south → Finish ─────
@@ -463,23 +513,59 @@ def run(robot: Robot) -> None:  # noqa: C901
                     robot.set_led(LED.RED, 0)
                     robot.set_led(LED.GREEN, 255)
 
-            elif not stop_sign_seen and robot.get_detections("stop sign"):
-                # First stop-sign sighting — begin dwell
-                robot.stop()
-                stop_sign_seen    = True
-                stop_sign_pause_t = time.monotonic()
-                robot.set_led(LED.RED, 255)
-                robot.set_led(LED.GREEN, 0)
-                print(f"[FSM] Stop sign detected — pausing {STOP_SIGN_DWELL_S:.0f} s.")
+            elif not stop_sign_seen:
+                # Only trigger once the sign appears large enough in the frame
+                # (proxy for being close), not on the very first sighting.
+                _, img_h = robot.get_detection_image_size()
+                close_det = None
+                if img_h > 0:
+                    for det in robot.get_detections("stop sign"):
+                        if float(det.get("confidence", 0.0)) < STOP_SIGN_MIN_CONF:
+                            continue
+                        bbox = det.get("bbox") or {}
+                        h_frac = float(bbox.get("height", 0)) / float(img_h)
+                        if h_frac >= STOP_SIGN_MIN_FRAC:
+                            close_det = (det, h_frac)
+                            break
+
+                if close_det is not None:
+                    det, h_frac = close_det
+                    robot.stop()
+                    stop_sign_seen    = True
+                    stop_sign_pause_t = time.monotonic()
+                    robot.set_led(LED.RED, 255)
+                    robot.set_led(LED.GREEN, 0)
+                    print(f"[FSM] Stop sign close (bbox h={h_frac:.2f} of frame) "
+                          f"— pausing {STOP_SIGN_DWELL_S:.0f} s.")
+                else:
+                    # Keep driving until the sign is close enough
+                    robot.set_led(LED.GREEN, 255)
+                    robot.set_led(LED.ORANGE, 0)
+                    if robot._nav_follow_pp_path_loop() == "IDLE":
+                        if seg4_phase == "approach":
+                            print("[FSM] SEG4A done — entering lane-5 bump zone (slow).")
+                            _load_path(robot, _op(SEG4B_PATH), SEG4B_CFG,
+                                       obstacle_avoidance=False)
+                            seg4_phase = "south"
+                        else:
+                            print("[FSM] SEG4 complete — at manipulation station.")
+                            robot.stop()
+                            state = "DONE"
 
             else:
                 # Normal driving toward finish
                 robot.set_led(LED.GREEN, 255)
                 robot.set_led(LED.ORANGE, 0)
                 if robot._nav_follow_pp_path_loop() == "IDLE":
-                    print("[FSM] SEG4 complete — at manipulation station.")
-                    robot.stop()
-                    state = "DONE"
+                    if seg4_phase == "approach":
+                        print("[FSM] SEG4A done — entering lane-5 bump zone (slow).")
+                        _load_path(robot, _op(SEG4B_PATH), SEG4B_CFG,
+                                   obstacle_avoidance=False)
+                        seg4_phase = "south"
+                    else:
+                        print("[FSM] SEG4 complete — at manipulation station.")
+                        robot.stop()
+                        state = "DONE"
 
         # ── DONE ──────────────────────────────────────────────────────────────
         elif state == "DONE":

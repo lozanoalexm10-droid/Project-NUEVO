@@ -54,7 +54,20 @@ class QwiicUltrasonicNode(Node):
             f"(I2C bus {self._bus_num}, addr 0x{self._addr:02X}, {self._rate_hz:.0f} Hz)"
         )
 
+    def _close_bus(self) -> None:
+        """Close the bus handle if open, swallowing any error during close."""
+        if self._bus is not None:
+            try:
+                self._bus.close()
+            except Exception:
+                pass
+            self._bus = None
+
     def _open_bus(self) -> None:
+        # Always close any existing handle first — overwriting self._bus without
+        # closing leaks the underlying file descriptor and quickly trips
+        # [Errno 24] Too many open files.
+        self._close_bus()
         try:
             import smbus2
             self._bus = smbus2.SMBus(self._bus_num)
@@ -68,7 +81,6 @@ class QwiicUltrasonicNode(Node):
     def _read_distance_mm(self) -> int | None:
         """Trigger a measurement and return distance in mm, or None on error."""
         try:
-            import smbus2
             if self._bus is None:
                 self._open_bus()
                 if self._bus is None:
@@ -80,7 +92,7 @@ class QwiicUltrasonicNode(Node):
             return (data[0] << 8) | data[1]
         except Exception as exc:
             self.get_logger().warn(f"I2C read error: {exc}")
-            self._bus = None
+            self._close_bus()
             return None
 
     def _tick(self) -> None:
@@ -111,6 +123,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        node._close_bus()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
