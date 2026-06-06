@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import LaserScan
 
 try:
@@ -44,7 +45,14 @@ class LidarRenderer(Node):
         self._latest: LaserScan | None = None
         self._dirty = False
 
-        self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
+        self.create_subscription(
+            LaserScan, "/scan", self._on_scan,
+            QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            ),
+        )
         # Render at ~1 Hz regardless of scan rate
         self.create_timer(1.0, self._render)
 

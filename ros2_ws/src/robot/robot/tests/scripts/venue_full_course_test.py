@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1     # 1–4: segment to begin from; 1 = full course from start
-AUTO_START    = False  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
+AUTO_START    = True  # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import math
