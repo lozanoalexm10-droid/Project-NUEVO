@@ -36,8 +36,6 @@ AUTO_START    = True  # True = 3-second countdown; False = green-light trigger (
 import math
 import time
 
-import numpy as np
-
 from robot.hardware_map import (
     Button,
     DCPidLoop,
@@ -66,9 +64,6 @@ from robot.tests.scripts._manipulator_config import (
 )
 from robot.util import densify_polyline
 
-# ── Lidar pose reset ──────────────────────────────────────────────────────────
-BACK_RIGHT_CORNER_ABS = (2745.0, 3965.0)  # NE corner (north wall × east wall), absolute frame (mm)
-
 # ── Camera pan for traffic-light detection ────────────────────────────────────
 GREEN_LIGHT_CAMPAN_DEG = 30.0  # camera pan angle while watching for green light (left)
 
@@ -86,11 +81,11 @@ STOP_SIGN_DWELL_S = 3.0
 #   SEG3C : finish north run + 90° right turn + east to CP3 (avoidance OFF)
 #   SEG4  : top-right U-turn → lane 5 → finish
 SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
-SEG2_CFG  = dict(speed=120, lookahead=300, spacing=50)
+SEG2_CFG  = dict(speed=130, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
 SEG3B_CFG = dict(
     speed=75, lookahead=115, spacing=400,
-    safe_dist=181, lane_width=451, avoidance_delay=245,
+    safe_dist=190, lane_width=451, avoidance_delay=245,
     obstacles_range=450, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
@@ -143,7 +138,9 @@ SEG2_PATH = [
 # zone the avoidance planner activates and deactivates. Keeps the planner from
 # fighting the 90° corner turns or treating the north/south walls as obstacles.
 OBS_ENTRY_OFFSET_MM = 400.0
-OBS_EXIT_OFFSET_MM  = 400.0
+OBS_EXIT_OFFSET_MM  = 600.0  # Goal must sit OUTSIDE obstacles_range (=450 in SEG3B_CFG)
+                             # so the planner doesn't see the north wall as an obstacle
+                             # and detour into a 180 right before exiting the zone.
 
 # Segment 3: three internal sub-paths with different avoidance settings.
 #   3a (avoidance OFF): CP2 east → corner → OBS_ENTRY_OFFSET_MM north.
@@ -279,73 +276,6 @@ def _traffic_light_color(robot: Robot) -> str | None:
     return best_color
 
 
-def _lidar_wall_pose_reset(
-    robot: Robot,
-    ox: float,
-    oy: float,
-    corner_abs: tuple[float, float] = BACK_RIGHT_CORNER_ABS,
-) -> tuple[float, float, float] | None:
-    """
-    Sample the lidar, detect the north wall and NE corner, and return a corrected
-    absolute pose (abs_x_mm, abs_y_mm, heading_deg) or None if detection fails.
-
-    The north wall appears as a horizontal row of points near y = corner_abs[1].
-    Fitting a line to those points gives heading error (from any tilt) and the
-    true wall y-position.  The rightmost cluster near corner_abs gives the x fix.
-    """
-    cx, cy = corner_abs
-
-    odom_x, odom_y, theta_r = robot.get_odometry_pose()
-    abs_x = odom_x + ox
-    abs_y = odom_y + oy
-
-    raw = robot.get_obstacles()   # robot-frame mm (same unit scale = 1 for mm)
-    if not raw:
-        print("[LIDAR] No scan data — skipping pose reset")
-        return None
-    pts = np.array(raw, dtype=float)   # (N, 2)
-
-    # Approximate robot→world transform using current (noisy) heading
-    ct, st = math.cos(theta_r), math.sin(theta_r)
-    wx = abs_x + pts[:, 0] * ct - pts[:, 1] * st
-    wy = abs_y + pts[:, 0] * st + pts[:, 1] * ct
-
-    # Isolate north-wall candidates: within 500 mm of the wall y, west of east wall
-    wall_mask = (wy > cy - 500.0) & (wx < cx + 150.0)
-    if int(wall_mask.sum()) < 8:
-        print(f"[LIDAR] Only {wall_mask.sum()} north-wall points — skipping")
-        return None
-
-    wall_wx = wx[wall_mask]
-    wall_wy = wy[wall_mask]
-
-    # Line fit: wy = m*wx + b  (true wall is horizontal → m ≈ 0)
-    m, b = np.polyfit(wall_wx, wall_wy, 1)
-
-    # Heading correction from wall tilt
-    corrected_theta_deg = math.degrees(theta_r - math.atan(float(m)))
-
-    # Y correction: fitted wall at robot x vs. true wall y = cy
-    fitted_y = float(b) + float(m) * abs_x
-    corrected_abs_y = abs_y + (cy - fitted_y)
-
-    # X correction: use wall point closest to NE corner
-    d = np.sqrt((wall_wx - cx) ** 2 + (wall_wy - cy) ** 2)
-    nearest = int(np.argmin(d))
-    if float(d[nearest]) < 500.0:
-        corrected_abs_x = abs_x + (cx - float(wall_wx[nearest]))
-        print(f"[LIDAR] Corner at ({wall_wx[nearest]:.0f},{wall_wy[nearest]:.0f}) — x corrected by {cx - float(wall_wx[nearest]):.0f} mm")
-    else:
-        corrected_abs_x = abs_x
-        print(f"[LIDAR] Corner not resolved ({d[nearest]:.0f} mm away) — x unchanged")
-
-    print(
-        f"[LIDAR] Pose: ({abs_x:.0f},{abs_y:.0f}) θ={math.degrees(theta_r):.1f}° "
-        f"→ ({corrected_abs_x:.0f},{corrected_abs_y:.0f}) θ={corrected_theta_deg:.1f}°"
-    )
-    return corrected_abs_x, corrected_abs_y, corrected_theta_deg
-
-
 def _estop(robot: Robot) -> None:
     robot.stop()
     robot.shutdown()
@@ -375,11 +305,22 @@ def run(robot: Robot) -> None:  # noqa: C901
         _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
 
     if not AUTO_START:
+        # Stepper API is fire-and-forget (publishes ROS msgs, no ack), so the
+        # firmware needs a moment between config/enable and the first move —
+        # otherwise pulses arrive before the driver is energized and the motor
+        # whirs without rotating. Give each stage time to land.
         robot.step_set_config(CAMPAN_STEPPER, CAMPAN_MAX_VELOCITY, CAMPAN_ACCELERATION)
+        time.sleep(0.2)
         robot.step_enable(CAMPAN_STEPPER)
-        time.sleep(0.1)
-        robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
-                        StepMoveType.ABSOLUTE, timeout=3.0)
+        time.sleep(0.5)
+        ok = robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
+                             StepMoveType.ABSOLUTE, timeout=3.0)
+        if not ok:
+            print("[WARN] CAMPAN pan-to-green-watch position timed out — retrying once.")
+            robot.step_enable(CAMPAN_STEPPER)
+            time.sleep(0.5)
+            robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(GREEN_LIGHT_CAMPAN_DEG),
+                            StepMoveType.ABSOLUTE, timeout=3.0)
         time.sleep(CAMPAN_SETTLE_S)
         print(f"[FSM] Camera panned to {GREEN_LIGHT_CAMPAN_DEG}° for traffic-light detection.")
 
@@ -388,9 +329,24 @@ def run(robot: Robot) -> None:  # noqa: C901
     print(f"[FSM] Checkpoints — CP1:{CP1}  CP2:{CP2}  CP3:{CP3}")
 
     state: str = "IDLE"
+    idle_leds_set: bool = False    # latch IDLE LEDs once — flooding the bus every tick
+                                   # was queuing set_velocity commands and stalling the
+                                   # first move after green-light detection.
     seg3_phase: str = "approach"   # 'approach' | 'obstacle' | 'exit'
     stop_sign_seen:    bool  = False
     stop_sign_pause_t: float = 0.0
+
+    def _start_segment() -> str:
+        nonlocal idle_leds_set
+        # Pan camera back to 0° (it was at GREEN_LIGHT_CAMPAN_DEG for traffic-light watch)
+        if not AUTO_START:
+            robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(0.0),
+                            StepMoveType.ABSOLUTE, timeout=3.0)
+            time.sleep(CAMPAN_SETTLE_S)
+        robot.set_led(LED.RED, 0)
+        robot.set_led(LED.GREEN, 255)
+        idle_leds_set = False
+        return f"SEG{START_SEGMENT}"
 
     period    = 1.0 / float(DEFAULT_FSM_HZ)
     next_tick = time.monotonic()
@@ -408,31 +364,32 @@ def run(robot: Robot) -> None:  # noqa: C901
                 return
 
             if AUTO_START:
-                robot.set_led(LED.ORANGE, 255)
-                robot.set_led(LED.GREEN, 0)
-                robot.set_led(LED.RED, 0)
+                if not idle_leds_set:
+                    robot.set_led(LED.ORANGE, 255)
+                    robot.set_led(LED.GREEN, 0)
+                    robot.set_led(LED.RED, 0)
+                    idle_leds_set = True
                 robot._draw_lidar_obstacles()
                 print(f"[FSM] Auto-starting SEG{START_SEGMENT} in 3 s …")
                 time.sleep(3)
                 robot.set_led(LED.ORANGE, 0)
                 state = f"SEG{START_SEGMENT}"
+                idle_leds_set = False
                 print(f"[FSM] → {state}")
             else:
                 # Traffic-light mode: stay stopped on red, go on green.
-                robot.set_led(LED.RED, 255)
-                robot.set_led(LED.GREEN, 0)
-                robot.set_led(LED.ORANGE, 0)
+                if not idle_leds_set:
+                    robot.set_led(LED.RED, 255)
+                    robot.set_led(LED.GREEN, 0)
+                    robot.set_led(LED.ORANGE, 0)
+                    idle_leds_set = True
                 color = _traffic_light_color(robot)
                 if color == "green":
                     print(f"[FSM] Green light — starting SEG{START_SEGMENT}.")
-                    robot.set_led(LED.RED, 0)
-                    robot.set_led(LED.GREEN, 255)
-                    state = f"SEG{START_SEGMENT}"
+                    state = _start_segment()
                 elif robot.get_button(Button.BTN_1):
                     print(f"[FSM] BTN_1 override — starting SEG{START_SEGMENT}.")
-                    robot.set_led(LED.RED, 0)
-                    robot.set_led(LED.GREEN, 255)
-                    state = f"SEG{START_SEGMENT}"
+                    state = _start_segment()
                 # color == 'red' or None → keep red LED on, stay in IDLE
 
         # ── SEG1: Lane 1 north → CP1 (first half of top-left U-turn) ─────────
@@ -468,30 +425,23 @@ def run(robot: Robot) -> None:  # noqa: C901
             if robot.get_button(Button.BTN_2):
                 _estop(robot); return
             if robot._nav_follow_pp_path_loop() == "IDLE":
+                px, py, pth = robot.get_odometry_pose()
+                abs_x, abs_y = px + ox, py + oy
                 if seg3_phase == "approach":
-                    print("[FSM] SEG3 approach done — entering obstacle zone.")
+                    print(f"[FSM] SEG3 approach done at abs=({abs_x:.0f},{abs_y:.0f}) "
+                          f"θ={math.degrees(pth):.1f}° — entering obstacle zone "
+                          f"(goal y={Y_TOP - OBS_EXIT_OFFSET_MM:.0f}, "
+                          f"wall y={Y_TOP:.0f}, buffer={OBS_EXIT_OFFSET_MM:.0f} mm).")
                     _load_path(robot, _op(SEG3_OBS_PATH), SEG3B_CFG, obstacle_avoidance=True, x_L=x_L_obs)
                     seg3_phase = "obstacle"
                 elif seg3_phase == "obstacle":
-                    print("[FSM] SEG3 obstacle zone done — lidar pose reset before exit turn.")
-                    robot.stop()
-                    time.sleep(0.3)
-                    result = _lidar_wall_pose_reset(robot, ox, oy)
-                    if result is not None:
-                        new_ax, new_ay, new_td = result
-                        robot.set_initial_theta(new_td)
-                        robot.reset_odometry()
-                        if not robot.wait_for_odometry_reset(timeout=3.0):
-                            print("[WARN] Odometry reset not confirmed — pose may be stale")
-                            robot.wait_for_pose_update(timeout=1.0)
-                        ox, oy = new_ax, new_ay
-                        print(f"[FSM] Origin reset to abs ({new_ax:.0f},{new_ay:.0f}) θ={new_td:.1f}°")
-                    else:
-                        print("[WARN] Lidar pose reset failed — proceeding with odometry estimate")
+                    print(f"[FSM] SEG3 obstacle zone done at abs=({abs_x:.0f},{abs_y:.0f}) "
+                          f"θ={math.degrees(pth):.1f}° — proceeding to exit turn.")
                     _load_path(robot, _op(SEG3_EXIT_PATH), SEG3C_CFG, obstacle_avoidance=False)
                     seg3_phase = "exit"
                 elif seg3_phase == "exit":
-                    print("[FSM] SEG3 complete — CP3 reached.")
+                    print(f"[FSM] SEG3 complete — CP3 reached at abs=({abs_x:.0f},{abs_y:.0f}) "
+                          f"θ={math.degrees(pth):.1f}°.")
                     _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
                     state = "SEG4"
 

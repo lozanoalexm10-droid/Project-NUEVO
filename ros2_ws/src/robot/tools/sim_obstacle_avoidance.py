@@ -135,6 +135,27 @@ SCENARIOS = {
             (-100.0, 2100.0),
         ],
     ),
+    # Real venue geometry — coordinates in COURSE frame (x=east, y=north, mm).
+    # Path: SEG3B obstacle phase from (1525, Y_BOT+400=1010) to
+    # (1525, Y_TOP-OBS_EXIT_OFFSET_MM=2900) after the fix bumped the offset to 600.
+    # Cones: the three test obstacles reported on the real course, ~305 mm off
+    # centerline — which is the case the GUI defaults DON'T cover and is why
+    # avoidance fires hard in sim but barely in reality.
+    "venue_real": dict(
+        path_pts      = [(1525.0, 1010.0), (1525.0, 2900.0)],
+        spacing       = 400.0,
+        start_pose    = [1525.0, 1010.0, math.pi / 2],
+        x_L           = 1525.0,
+        field_xlim    = (1000.0, 2050.0),
+        field_ylim    = (800.0, 3100.0),
+        lane_lines_x  = [1525.0 - 225.5, 1525.0 + 225.5],   # ±lane_width/2 = 451/2
+        label         = "Venue REAL SEG3B (course-frame, cones @ ±305 mm)",
+        default_cones = [
+            (1830.0, 1565.0),
+            (1220.0, 2175.0),
+            (1830.0, 2785.0),
+        ],
+    ),
 }
 
 _active_scenario_key = "lane_switch"
