@@ -140,6 +140,40 @@ ARM_SEARCH_ELBOW_DEG     = 90.0    # elbow servo while vision is scanning (arm n
 # Carry: safe retracted pose for rotating turntable between pick and place
 ARM_CARRY_SHOULDER_DEG   = 100.0
 ARM_CARRY_ELBOW_DEG      = 90.0
+# Ranging: forearm-mounted ultrasonic + camera tilted down at the cup stack.
+# Shoulder 120 sits at the boundary of the "any-elbow-safe" zone — at this or
+# higher shoulder the elbow can swing through its entire 0–180° physical range
+# without colliding with the plate or sensor housing at any turntable angle.
+# Elbow 4 tilts the forearm ~62° below horizontal — enough to keep the US
+# sensor *behind* the cup centre line at the 6"+cup-radius (=185 mm) mallow
+# zone so the beam sweeps outward through every cup at ±90° instead of
+# overshooting them.  Verified in sim_arm_kinematics.py: every cup across
+# the ±90° workspace returns a 55–193 mm US distance at this pose.
+ARM_RANGING_SHOULDER_DEG = 120.0
+ARM_RANGING_ELBOW_DEG    =   4.0
+
+# ── Hardware envelope (used for collision-aware safe-range checks) ──────────
+# Base plate: 11"×11" square at z = 0, turntable axis is centered LR, sits
+# ROBOT_FRONT_TO_TURNTABLE_MM behind the plate's front edge.  Treated as a
+# solid sheet — anything inside the plate XY footprint with z < 0 collides.
+BASE_PLATE_SIZE_MM         = 11.0 * 25.4   # 279.4 mm
+BASE_PLATE_FRONT_X_MM      = ROBOT_FRONT_TO_TURNTABLE_MM  # front edge in robot x
+
+# Front sensor housing (lidar + campan + camera body) — a 70 mm wide stub
+# from the plate front out to the camera lens.  Top is FLUSH with the plate
+# (z = 0); extends downward toward the floor.  The arm must stay above z = 0
+# over this footprint just like over the plate.
+FRONT_EXT_WIDTH_MM         = 70.0
+FRONT_EXT_LENGTH_MM        = CAMERA_PROTRUSION_MM    # 142 mm
+SENSORS_Z_TOP_MM           =    0.0
+SENSORS_Z_BOTTOM_MM        = -120.0   # extends past the camera at z=-40
+
+# Dynamic safe-elbow rule of thumb (from sim_arm_kinematics.py):
+#   shoulder ≥ 120°  → ANY elbow in [0, 180] safe, at ANY turntable angle.
+#   shoulder = 105°  → elbow safe roughly [10, 180]; recommend keep ≥ 30 margin.
+#   shoulder = 90°   → elbow safe roughly [32, 180].
+# See MANIPULATOR.md §5 for the full table.  These are advisory; the
+# authoritative check is `tools/sim_arm_kinematics.py arm_collides()`.
 
 # ── Turntable home offset ─────────────────────────────────────────────────────
 # Firmware homing: step_home() sets position 0 at stow (LIM1 trigger = 180°).
@@ -166,6 +200,13 @@ MARSHMALLOW_DISTANCE_MM  = 200.0   # TODO: measure horizontal distance from turn
 PLATE_X_MM               = 177.8   # 3 in forward of robot front (76.2 mm) + turntable offset (101.6 mm)
 PLATE_Y_MM               = 0.0     # plate is directly forward
 PLATE_Z_MM               = GROUND_Z_MM + 15.0  # floor + graham cracker (~10 mm) + small clearance
+
+# ── Marshmallow place position (where the gripper releases after picking) ────
+# Tuned in sim_arm_kinematics.py: turntable ≈ -60.5°, shoulder ≈ 98°, elbow ≈ 15°
+# (just below the elbow safe-min of 20° — verify on hardware before running).
+PLACE_X_MM               =  128.0   # forward of turntable axis (mm)
+PLACE_Y_MM               = -226.0   # right of turntable axis (negative = right)
+PLACE_Z_MM               = -201.0   # ≈ 28 mm above floor (1.1" above ground)
 
 # ── Camera field of view ──────────────────────────────────────────────────────
 # Raspberry Pi Camera Module v2 with default lens: ~62° HFOV.
