@@ -117,11 +117,14 @@ MALLOW_BEARING_DEG: float = 0.0
 
 # Horizontal distance from the camera lens to the marshmallow center (mm).
 # Measure with a ruler from the camera housing face to the mallow center.
-MALLOW_DIST_MM: float = 300.0
+# 7.628 in × 25.4 = 193.8 mm
+MALLOW_DIST_MM: float = 193.8
 
 # Height of the marshmallow center in robot frame (mm).
-# Base plate = 0 mm.  Floor = approx -229 mm.  1-cup stack ≈ -116 mm.
-MALLOW_HEIGHT_MM: float = -116.0
+# Base plate = 0 mm.  Floor measured at -244.2 mm below base plate.
+# Stack: 2.33 mm cardboard + 6 Solo cups (121 + 5×5.3 = 147.5 mm) + mallow half-height 13 mm
+# Mallow center = -244.2 + 2.33 + 147.5 + 13 = -81.37 mm
+MALLOW_HEIGHT_MM: float = -81.37
 
 # Set True if you measured MALLOW_DIST_MM from the turntable axis instead of
 # from the camera. In that case the camera forward offset is NOT added.
@@ -133,13 +136,18 @@ PLACE_REACH_MM:      float = CAMERA_FORWARD_OFFSET_MM   # reach from turntable a
 PLACE_Z_MM:          float = PLATE_Z_MM                 # z of plate surface
 
 # ── Safe carry pose ───────────────────────────────────────────────────────────
-SAFE_SHOULDER_DEG = 140.0
+SAFE_SHOULDER_DEG = 105.0
 SAFE_ELBOW_DEG    = 90.0
 
 # ── Turntable homing ──────────────────────────────────────────────────────────
 HOME_NUDGE_DEG = 5.0
 HOME_TIMEOUT_S = 30.0
 HOME_BACKOFF   = 200
+# Limit switch fires before the full mechanical stow position. Measured on
+# this robot: LIM1 trips at ~171° instead of 180°, so commanding 0° using a
+# home_offset of 180° overshoots forward by ~9°. Use the measured value
+# (matches TURNTABLE_HOME_OFFSET_DEG in _manipulator_config.py).
+TURNTABLE_HOME_OFFSET_MEASURED_DEG = TURNTABLE_HOME_OFFSET_DEG
 
 
 # ── Helpers (mirrors turntable_pick_place_test.py exactly) ────────────────────
@@ -183,8 +191,17 @@ def _safe_arm_retract(
 
 def _turntable_to_deg(robot: Robot, target_deg: float, home_offset: float) -> None:
     target_deg = max(TURNTABLE_MIN_DEG, min(TURNTABLE_MAX_DEG, target_deg))
-    steps = turntable_deg_to_steps(home_offset - target_deg)
-    robot.step_move(TURNTABLE_STEPPER, steps, StepMoveType.ABSOLUTE)
+    delta_deg  = abs(home_offset - target_deg)
+    steps      = turntable_deg_to_steps(home_offset - target_deg)
+    # Fire-and-forget — _wait_stepper_idle consistently misses the brief
+    # IDLE→active→IDLE transition on the turntable so blocking just stalls the
+    # FSM for the full timeout while the move itself completes correctly.
+    # Sleep for the worst-case travel time at TURNTABLE_MAX_VELOCITY plus a
+    # safety margin to cover the trapezoidal velocity profile and settling.
+    robot.step_move(TURNTABLE_STEPPER, steps, StepMoveType.ABSOLUTE, blocking=False)
+    deg_per_sec = TURNTABLE_MAX_VELOCITY * (360.0 / 3200.0)  # 2800 steps/s ≈ 315°/s
+    travel_s    = delta_deg / deg_per_sec + 0.5
+    time.sleep(travel_s)
 
 
 def _home_turntable(robot: Robot) -> float:
@@ -215,8 +232,9 @@ def _home_turntable(robot: Robot) -> float:
     print(f"[HOME] LIM1 after home attempt: {lim1_state}")
 
     if ok:
-        print("[HOME] Turntable homed.  Firmware step 0 = stow (180°).")
-        return TURNTABLE_MAX_DEG
+        print(f"[HOME] Turntable homed.  Firmware step 0 = stow "
+              f"({TURNTABLE_HOME_OFFSET_MEASURED_DEG:.1f}°, measured).")
+        return TURNTABLE_HOME_OFFSET_MEASURED_DEG
     else:
         print("[HOME] WARNING: homing timed out — LIM1 may not be wired. "
               "Falling back to manual alignment (offset=0°).")
@@ -224,7 +242,11 @@ def _home_turntable(robot: Robot) -> float:
 
 
 def _campan_to_deg(robot: Robot, target_deg: float) -> None:
-    robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(target_deg), StepMoveType.ABSOLUTE)
+    # Fire-and-forget — see comment in _turntable_to_deg. Campan range is small
+    # so a fixed 1 s settle covers the worst-case sweep.
+    robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(target_deg),
+                    StepMoveType.ABSOLUTE, blocking=False)
+    time.sleep(1.0)
 
 
 def _bearing_dist_to_robot_frame(

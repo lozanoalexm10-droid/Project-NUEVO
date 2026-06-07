@@ -16,7 +16,7 @@ Segment map (checkpoints are at the midpoints of 90° turn pairs):
 
 Checkpoint coordinates (absolute course frame, mm):
   CP1: (305,    3660)  — top-left  U-turn midpoint  (lane 1 → lane 2)
-  CP2: (1068,    610)  — bottom    turn  midpoint   (lane 2 → obstacle zone)
+  CP2: (1068,    460)  — bottom    turn  midpoint   (lane 2 → obstacle zone)
   CP3: (1983,   3660)  — top-right U-turn midpoint  (obstacle zone → lane 5)
 
 For a checkpoint restart: place the robot at CP_N with the correct heading,
@@ -31,6 +31,7 @@ from __future__ import annotations
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1     # 1–4: segment to begin from; 1 = full course from start
 AUTO_START    = True
+
   # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -110,7 +111,8 @@ X_LANE5   = 2440.0    # lane 5 centre
 
 Y_START   =    -160.0    # course start y
 Y_TOP     = 3500.0    # far (north) end of course — top turns happen here
-Y_BOT     =  610.0    # near (south) end — bottom turns happen here
+Y_BOT     =  460.0    # near (south) end — bottom turns happen here
+                      # (lowered 150 mm so the obstacle-zone turn/entry sit further south)
 
 FINISH_X  = 2440.0    # manipulation station x (lane 5) = 4 * 610
 FINISH_Y  =  280.0    # manipulation station y
@@ -119,7 +121,7 @@ FINISH_Y  =  280.0    # manipulation station y
 # These are the absolute course positions. When restarting at CP_N the robot is
 # placed here and odometry is reset; the segment waypoints below start from (0, 0).
 CP1 = (  305.0, 3660.0)
-CP2 = ( 1067.5,  610.0)
+CP2 = ( 1067.5,  460.0)
 CP3 = ( 1982.5, 3660.0)
 
 # ── Segment waypoints ─────────────────────────────────────────────────────────
@@ -149,9 +151,12 @@ SEG2_PATH = [
 # zone the avoidance planner activates and deactivates. Keeps the planner from
 # fighting the 90° corner turns or treating the north/south walls as obstacles.
 OBS_ENTRY_OFFSET_MM = 400.0
-OBS_EXIT_OFFSET_MM  = 600.0  # Goal must sit OUTSIDE obstacles_range (=450 in SEG3B_CFG)
+OBS_EXIT_OFFSET_MM  = 900.0  # Goal must sit OUTSIDE obstacles_range (=450 in SEG3B_CFG)
                              # so the planner doesn't see the north wall as an obstacle
                              # and detour into a 180 right before exiting the zone.
+                             # Bumped from 600 → 900 after the planner kept running
+                             # avoidance past the last obstacle and did a U-turn instead
+                             # of letting SEG3C drive a clean straight to the top corner.
 
 # Segment 3: three internal sub-paths with different avoidance settings.
 #   3a (avoidance OFF): CP2 east → corner → OBS_ENTRY_OFFSET_MM north.

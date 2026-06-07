@@ -48,10 +48,10 @@ ELBOW_SAFE_MAX       = 160.0
 
 # ── Gripper ───────────────────────────────────────────────────────────────────
 GRIPPER_CHANNEL      = ServoChannel.CH_14
-GRIPPER_OPEN_DEG     = 0.0                  # fully open — approach position before grab
-GRIPPER_GRAB_DEG     = 45.0                 # hold position for marshmallow
-GRIPPER_CLOSE_DEG    = 120.0                # fully closed hard stop
-GRIPPER_ROAST_DEG    = 60.0                 # slightly open during roasting
+GRIPPER_OPEN_DEG     = 29.0                 # fully open — approach position before grab
+GRIPPER_GRAB_DEG     = 50.0                 # hold position for marshmallow (≈⅓ from open)
+GRIPPER_CLOSE_DEG    = 90.0                 # fully closed hard stop
+GRIPPER_ROAST_DEG    = 70.0                 # slightly open during roasting (≈⅔ from open)
 
 # ── Heating wire ──────────────────────────────────────────────────────────────
 # Controlled via 1-channel 5V optical relay module (active LOW, Handson MDU1150).
@@ -182,7 +182,7 @@ SENSORS_Z_BOTTOM_MM        = -120.0   # extends past the camera at z=-40
 #   After firmware homing (stow = step 0): offset = +180  → forward(0°) = +3200 steps CW ✓
 #   Manual alignment at forward (forward = step 0): offset = 0   → forward(0°) = 0 steps ✓
 # NEVER use target+offset — that sends moves back into the limit switch.
-TURNTABLE_HOME_OFFSET_DEG = 171.0    # limit switch triggers 9° short of full stow (measured)
+TURNTABLE_HOME_OFFSET_DEG = 169.0    # limit switch triggers 11° short of full stow (measured 2026-06-07; was 171° but post-home turntable overshot 0° by 2° CW)
 
 # ── Target geometry (measure from competition venue, all mm, robot frame) ─────
 # Robot frame: x = forward, y = left, z = up; origin = turntable axis at base plate.

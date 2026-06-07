@@ -6,5 +6,7 @@
 #from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
 #from robot.tests.scripts.campan_detect_ik_test import run  # noqa: F401
 #from robot.tests.scripts.turntable_pick_place_test import run  # noqa: F401
-from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
+#from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
 #from robot.tests.scripts.green_light_detect_test import run  # noqa: F401
+from robot.tests.scripts.manual_ik_pick_place_test import run  # noqa: F401
+#from robot.tests.scripts.elbow_calibration_test import run  # noqa: F401
