@@ -222,10 +222,14 @@ _M_LO  = _mallow_on_semicircle(45.0, MALLOW_Z_MIN)   # 6"  above floor, bearing 
 _M_MID = _mallow_on_semicircle(45.0, MALLOW_Z_MID)   # 9"  above floor, bearing +45°
 _M_HI  = _mallow_on_semicircle(45.0, MALLOW_Z_MAX)   # 12" above floor, bearing +45°
 
+# Position from manual_ik_pick_place_test.py: bearing 0°, 193.8 mm from camera,
+# height -81.37 mm (floor + 2.33 mm cardboard + 6 Solo cups + mallow half-height).
+_M_MANUAL = (CAMERA_FORWARD_OFFSET_MM + 193.8, 0.0, -81.37)
+
 PRESETS = [
     ("Place",        PLACE_X_MM, PLACE_Y_MM, PLACE_Z_MM,  "#ffaa44"),
     ("Plate (old)",  PLATE_X_MM, PLATE_Y_MM, PLATE_Z_MM,  "#ddaa44"),
-    ('Mallow 6"',    *_M_LO,                              "#ff5555"),
+    ('Manual Test',  *_M_MANUAL,                          "#ff5555"),
     ('Mallow 9"',    *_M_MID,                             "#ff7755"),
     ('Mallow 12"',   *_M_HI,                              "#ff9988"),
 ]
