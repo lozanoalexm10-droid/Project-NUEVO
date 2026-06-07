@@ -36,20 +36,21 @@ def turntable_deg_to_steps(degrees: float) -> int:
 SHOULDER_CHANNEL     = ServoChannel.CH_16
 SHOULDER_STOW_DEG    = 90.0                 # safe resting position
 SHOULDER_UP_DEG      = 60.0                 # raised for reach
-SHOULDER_SAFE_MIN    = 75.0                 # hard mechanical limit — do not exceed
+SHOULDER_SAFE_MIN    = 75.0                 # physical mechanical limit — shoulder
+                                            # cannot rotate past this. Do not lower.
 SHOULDER_SAFE_MAX    = 180.0
 
 # ── Elbow ─────────────────────────────────────────────────────────────────────
 ELBOW_CHANNEL        = ServoChannel.CH_15
 ELBOW_STOW_DEG       = 90.0                 # folded/retracted
 ELBOW_EXTEND_DEG     = 45.0                 # extended toward target
-ELBOW_SAFE_MIN       = 20.0
+ELBOW_SAFE_MIN       = 5.0                  # was 20 — same pulse-mapping rationale
 ELBOW_SAFE_MAX       = 160.0
 
 # ── Gripper ───────────────────────────────────────────────────────────────────
 GRIPPER_CHANNEL      = ServoChannel.CH_14
 GRIPPER_OPEN_DEG     = 29.0                 # fully open — approach position before grab
-GRIPPER_GRAB_DEG     = 50.0                 # hold position for marshmallow (≈⅓ from open)
+GRIPPER_GRAB_DEG     = 58.0                 # hold position for marshmallow (tightened +8° from 50)
 GRIPPER_CLOSE_DEG    = 90.0                 # fully closed hard stop
 GRIPPER_ROAST_DEG    = 70.0                 # slightly open during roasting (≈⅔ from open)
 
@@ -90,8 +91,8 @@ ULTRASONIC_FOREARM_OFFSET_MM = 215.0    # TODO: distance from elbow pivot to sen
 ULTRASONIC_HEIGHT_OFFSET_MM  = 29.0    # TODO: sensor height above forearm centerline (+ = above)
 
 # ── Arm geometry (measure from physical robot, all in mm) ─────────────────────
-ARM_L1_MM               = 156.0    # upper arm: shoulder pivot → elbow pivot
-ARM_L2_MM               = 315.0    # forearm:   elbow pivot   → gripper end where grabbing happens
+ARM_L1_MM               = 155.0   # upper arm: shoulder pivot → elbow pivot
+ARM_L2_MM               = 298.0    # forearm:   elbow pivot   → gripper end where grabbing happens
 ARM_SHOULDER_HEIGHT_MM  = 95.0    # shoulder pivot height above robot base plate (measured)
 ARM_SHOULDER_OFFSET_MM  = 14.0    # forward distance from turntable axis to shoulder pivot (~1 inch — measure)
 
@@ -114,7 +115,11 @@ CAMERA_FORWARD_OFFSET_MM    = ROBOT_FRONT_TO_TURNTABLE_MM + CAMERA_PROTRUSION_MM
 SHOULDER_SERVO_OFFSET   = 96.0     # servo angle when upper arm is horizontal forward
 SHOULDER_SERVO_SIGN     = 1.0      # higher servo angle raises the arm
 ELBOW_SERVO_OFFSET      = 90.0     # servo angle when forearm is collinear with upper arm (fully straight)
-ELBOW_SERVO_SIGN        = -1.0     # lower angle = forearm up (opens), higher angle = forearm down (closes)
+ELBOW_SERVO_SIGN        = 1.0      # higher servo angle = forearm angled UP (elbow-up).
+                                   # Confirmed empirically: under sign=-1 + elbow_up=True the IK
+                                   # output servo 53.3° produced elbow-DOWN physically, so the
+                                   # true hardware mapping is the opposite of MANIPULATOR.md's
+                                   # documented sign=-1 convention. Servo 126.7° = elbow-up.
 
 # Assembled geometry object — import this in programs and tests that use IK.
 ARM_GEOMETRY = ArmGeometry(
@@ -190,7 +195,7 @@ TURNTABLE_HOME_OFFSET_DEG = 169.0    # limit switch triggers 11° short of full 
 # Ground level: the competition floor sits 229 mm BELOW the robot base plate.
 # All absolute z heights must be expressed relative to the base plate (z = 0).
 # Floor surface = GROUND_Z_MM = -229 mm.  Objects on the floor have z < 0.
-GROUND_Z_MM              = -229.0  # floor surface in robot frame (measured)
+GROUND_Z_MM              = -247.0  # floor surface in robot frame (measured)
 
 MARSHMALLOW_HEIGHT_MM    = 80.0     # fallback height — runtime uses vision estimate
 MARSHMALLOW_DISTANCE_MM  = 200.0   # TODO: measure horizontal distance from turntable axis
@@ -204,7 +209,7 @@ PLATE_Z_MM               = GROUND_Z_MM + 15.0  # floor + graham cracker (~10 mm)
 # ── Marshmallow place position (where the gripper releases after picking) ────
 # Tuned in sim_arm_kinematics.py: turntable ≈ -60.5°, shoulder ≈ 98°, elbow ≈ 15°
 # (just below the elbow safe-min of 20° — verify on hardware before running).
-PLACE_X_MM               =  128.0   # forward of turntable axis (mm)
+PLACE_X_MM               =  240.0   # forward of turntable axis (mm)
 PLACE_Y_MM               = -226.0   # right of turntable axis (negative = right)
 PLACE_Z_MM               = -201.0   # ≈ 28 mm above floor (1.1" above ground)
 

@@ -73,7 +73,7 @@ from __future__ import annotations
 import math
 import time
 
-from robot.arm_kinematics import OutOfReachError, inverse_kinematics
+from robot.arm_kinematics import OutOfReachError, forward_kinematics, inverse_kinematics
 from robot.hardware_map import Button, DEFAULT_FSM_HZ, LED, Limit, StepMoveType
 from robot.robot import FirmwareState, Robot
 from robot.tests.scripts._manipulator_config import (
@@ -92,6 +92,9 @@ from robot.tests.scripts._manipulator_config import (
     GRIPPER_CLOSE_DEG,
     GRIPPER_GRAB_DEG,
     GRIPPER_OPEN_DEG,
+    PLACE_X_MM,
+    PLACE_Y_MM,
+    PLACE_Z_MM as CONFIG_PLACE_Z_MM,
     PLATE_Z_MM,
     SHOULDER_CHANNEL,
     SHOULDER_SAFE_MAX,
@@ -118,26 +121,31 @@ MALLOW_BEARING_DEG: float = 0.0
 # Horizontal distance from the camera lens to the marshmallow center (mm).
 # Measure with a ruler from the camera housing face to the mallow center.
 # 7.628 in × 25.4 = 193.8 mm
-MALLOW_DIST_MM: float = 193.8
+MALLOW_DIST_MM: float = 194.1
 
 # Height of the marshmallow center in robot frame (mm).
 # Base plate = 0 mm.  Floor measured at -244.2 mm below base plate.
 # Stack: 2.33 mm cardboard + 6 Solo cups (121 + 5×5.3 = 147.5 mm) + mallow half-height 13 mm
 # Mallow center = -244.2 + 2.33 + 147.5 + 13 = -81.37 mm
-MALLOW_HEIGHT_MM: float = -81.37
+MALLOW_HEIGHT_MM: float = -70.0   # was -78.4 (true mallow center); lifted by ~12 mm
+                                  # so the gripper actually reaches the mallow instead
+                                  # of grabbing the top of the cup — the arm sags lower
+                                  # than IK predicts under load.
 
 # Set True if you measured MALLOW_DIST_MM from the turntable axis instead of
 # from the camera. In that case the camera forward offset is NOT added.
 DIST_IS_FROM_TURNTABLE_AXIS: bool = False
 
 # ── Place target (same defaults as turntable_pick_place_test.py) ──────────────
-PLACE_TURNTABLE_DEG: float = -45.0        # bearing to place at
-PLACE_REACH_MM:      float = CAMERA_FORWARD_OFFSET_MM   # reach from turntable axis
-PLACE_Z_MM:          float = PLATE_Z_MM                 # z of plate surface
+# Place target — pulled directly from _manipulator_config.py
+# (PLACE_X_MM, PLACE_Y_MM, PLACE_Z_MM = 128, -226, -201).
+PLACE_TURNTABLE_DEG: float = math.degrees(math.atan2(PLACE_Y_MM, PLACE_X_MM))
+PLACE_REACH_MM:      float = math.hypot(PLACE_X_MM, PLACE_Y_MM)
+PLACE_Z_MM:          float = CONFIG_PLACE_Z_MM
 
 # ── Safe carry pose ───────────────────────────────────────────────────────────
-SAFE_SHOULDER_DEG = 105.0
-SAFE_ELBOW_DEG    = 90.0
+SAFE_SHOULDER_DEG = 110.0   # upper arm angled slightly up (geo ≈ +14°)
+SAFE_ELBOW_DEG    = 70.0    # forearm tucked — works empirically (grab succeeded).
 
 # ── Turntable homing ──────────────────────────────────────────────────────────
 HOME_NUDGE_DEG = 5.0
@@ -178,10 +186,12 @@ def _safe_arm_retract(
     elbow_pos: float,
     gripper_pos: float,
 ) -> tuple[float, float, float]:
+    # NOTE: do NOT change the gripper position here. After PICKING the gripper
+    # is at GRAB squeezing the mallow; closing it tighter and then having the
+    # caller relax it back to GRAB causes the mallow to drop.
     robot.enable_servo(SHOULDER_CHANNEL)
     robot.enable_servo(ELBOW_CHANNEL)
     robot.enable_servo(GRIPPER_CHANNEL)
-    gripper_pos  = _move_servo(robot, GRIPPER_CHANNEL,  gripper_pos,  GRIPPER_CLOSE_DEG)
     shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, SAFE_SHOULDER_DEG,
                                SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
     elbow_pos    = _move_servo(robot, ELBOW_CHANNEL,    elbow_pos,    SAFE_ELBOW_DEG,
@@ -249,6 +259,13 @@ def _campan_to_deg(robot: Robot, target_deg: float) -> None:
     time.sleep(1.0)
 
 
+# Distance from the camera lens to the campan stepper motor axis (mm).
+# The mallow zone half-circles are now centered below the campan axis, which
+# sits this much CLOSER to the robot than the camera lens.
+CAMPAN_OFFSET_FROM_CAMERA_MM = 38.7
+CAMPAN_FORWARD_OFFSET_MM     = CAMERA_FORWARD_OFFSET_MM - CAMPAN_OFFSET_FROM_CAMERA_MM
+
+
 def _bearing_dist_to_robot_frame(
     bearing_deg: float,
     dist_mm: float,
@@ -258,8 +275,11 @@ def _bearing_dist_to_robot_frame(
     Convert (bearing, distance, height) to robot-frame (x, y, z) for IK.
 
     bearing_deg: horizontal angle in robot frame (0=forward, + =left, - =right)
-    dist_mm:     horizontal distance — from camera if DIST_IS_FROM_TURNTABLE_AXIS=False,
-                 from turntable axis if True
+    dist_mm:     horizontal distance — from the CAMPAN STEPPER MOTOR AXIS if
+                 DIST_IS_FROM_TURNTABLE_AXIS=False, from turntable axis if True.
+                 The campan axis is CAMPAN_OFFSET_FROM_CAMERA_MM (=38.7 mm) closer
+                 to the robot than the camera lens — the mallow zone half-circles
+                 are now centered below this point.
     height_mm:   z in robot frame (base plate = 0)
 
     Returns (x_mm, y_mm, z_mm) with turntable axis as origin, ready for IK.
@@ -269,9 +289,9 @@ def _bearing_dist_to_robot_frame(
         x_mm = dist_mm * math.cos(bearing_rad)
         y_mm = dist_mm * math.sin(bearing_rad)
     else:
-        # Camera axis sits CAMERA_FORWARD_OFFSET_MM ahead of the turntable axis.
-        # A distance measured from the camera must be offset by this amount.
-        x_mm = CAMERA_FORWARD_OFFSET_MM + dist_mm * math.cos(bearing_rad)
+        # Campan axis sits CAMPAN_FORWARD_OFFSET_MM ahead of the turntable axis
+        # (= camera offset minus 38.7 mm since the campan axis is closer in).
+        x_mm = CAMPAN_FORWARD_OFFSET_MM + dist_mm * math.cos(bearing_rad)
         y_mm = dist_mm * math.sin(bearing_rad)
     return x_mm, y_mm, height_mm
 
@@ -344,16 +364,41 @@ def run(robot: Robot) -> None:  # noqa: C901
             robot.enable_servo(SHOULDER_CHANNEL)
             robot.enable_servo(ELBOW_CHANNEL)
             robot.enable_servo(GRIPPER_CHANNEL)
-            time.sleep(0.2)
+            time.sleep(0.4)
 
-            shoulder_pos = _move_servo(
-                robot, SHOULDER_CHANNEL, shoulder_pos, SAFE_SHOULDER_DEG,
-                SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX,
+            # Fold the elbow ALL THE WAY IN first so the forearm sits roughly
+            # above the upper arm — that puts the arm's COM directly over the
+            # shoulder pivot and minimizes the gravity moment the shoulder has
+            # to overcome on the lift. Then we lift the shoulder, then return
+            # the elbow to the desired safe pose with shoulder already up.
+            TIGHT_ELBOW_DEG = 25.0  # near ELBOW_SAFE_MIN — max fold inward
+            print(f"[TEST] SAFE_RAISE — tight-folding elbow {elbow_pos:.1f}° → "
+                  f"{TIGHT_ELBOW_DEG:.1f}° (COM over shoulder).")
+            elbow_pos = _move_servo(
+                robot, ELBOW_CHANNEL, elbow_pos, TIGHT_ELBOW_DEG,
+                ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
             )
+            time.sleep(0.4)
+
+            # Direct shoulder lift with the elbow tight-folded over the pivot.
+            # Hammer the target value with hold writes so even if the first
+            # command is dropped, the next one lands.
+            print(f"[TEST] SAFE_RAISE — raising shoulder {shoulder_pos:.1f}° → "
+                  f"{SAFE_SHOULDER_DEG:.1f}° (direct set, no ramp).")
+            for i in range(5):
+                robot.set_servo(SHOULDER_CHANNEL, SAFE_SHOULDER_DEG)
+                time.sleep(0.3 if i == 0 else 0.15)
+            shoulder_pos = SAFE_SHOULDER_DEG
+
+            # Now that the shoulder is up, unfold the elbow to the desired
+            # safe pose so the arm is ready for IK.
+            print(f"[TEST] SAFE_RAISE — unfolding elbow {elbow_pos:.1f}° → "
+                  f"{SAFE_ELBOW_DEG:.1f}° (shoulder is up, gripper clear).")
             elbow_pos = _move_servo(
                 robot, ELBOW_CHANNEL, elbow_pos, SAFE_ELBOW_DEG,
                 ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
             )
+
             gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_OPEN_DEG)
             print(f"[TEST] SAFE_RAISE — shoulder={shoulder_pos:.1f}°  "
                   f"elbow={elbow_pos:.1f}°  gripper={gripper_pos:.1f}°")
@@ -412,7 +457,13 @@ def run(robot: Robot) -> None:  # noqa: C901
                   f"d={d:.0f} mm  (max={ARM_GEOMETRY.L1+ARM_GEOMETRY.L2:.0f})")
 
             try:
-                _, pick_sh, pick_el = inverse_kinematics(pick_x, pick_y, pick_z, ARM_GEOMETRY)
+                # elbow_up=True (default) — combined with ELBOW_SERVO_SIGN=-1
+                # this produces the elbow-at-top, gripper-from-above pose per
+                # MANIPULATOR.md's sign=-1 convention (low elbow servo = forearm
+                # angled up).
+                _, pick_sh, pick_el = inverse_kinematics(
+                    pick_x, pick_y, pick_z, ARM_GEOMETRY,
+                )
             except OutOfReachError as exc:
                 print(f"[TEST] IK_COMPUTE — UNREACHABLE: {exc}")
                 print("[TEST] IK_COMPUTE — check MALLOW_DIST_MM / MALLOW_HEIGHT_MM "
@@ -446,7 +497,23 @@ def run(robot: Robot) -> None:  # noqa: C901
                 ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
             )
             time.sleep(0.5)
-            print("[TEST] APPROACHING — at pick position.")
+            # Forward-kinematics check — where does the script *think* the gripper
+            # tip is, given the (possibly clipped) commanded servo angles? Compare
+            # with the actual measured position to isolate calibration error vs
+            # safe-limit clipping vs geometry constants.
+            fk_x, fk_y, fk_z = forward_kinematics(
+                MALLOW_BEARING_DEG, shoulder_pos, elbow_pos, ARM_GEOMETRY,
+            )
+            print(f"[TEST] APPROACHING — commanded servos: "
+                  f"shoulder={shoulder_pos:.1f}° (target {arm_shoulder_deg:.1f}°)  "
+                  f"elbow={elbow_pos:.1f}° (target {arm_elbow_deg:.1f}°)")
+            print(f"[TEST] APPROACHING — FK gripper position: "
+                  f"x={fk_x:.0f}  y={fk_y:.0f}  z={fk_z:.0f} mm")
+            print(f"[TEST] APPROACHING — pick target was:      "
+                  f"x={pick_x:.0f}  y={pick_y:.0f}  z={pick_z:.0f} mm")
+            print(f"[TEST] APPROACHING — FK − target offset:   "
+                  f"dx={fk_x - pick_x:+.0f}  dy={fk_y - pick_y:+.0f}  dz={fk_z - pick_z:+.0f} mm")
+            print("[TEST] APPROACHING — at pick position, grabbing.")
             state = "PICKING"
             state_entry = time.monotonic()
 
@@ -482,7 +549,9 @@ def run(robot: Robot) -> None:  # noqa: C901
             print(f"[TEST] CARRY_TO_PLACE — place robot-frame: "
                   f"x={place_x:.0f}  y={place_y:.0f}  z={place_z:.0f} mm")
             try:
-                _, place_sh, place_el = inverse_kinematics(place_x, place_y, place_z, ARM_GEOMETRY)
+                _, place_sh, place_el = inverse_kinematics(
+                    place_x, place_y, place_z, ARM_GEOMETRY,
+                )
             except OutOfReachError as exc:
                 print(f"[TEST] CARRY_TO_PLACE — place IK failed: {exc}")
                 state = "RESTOW"
