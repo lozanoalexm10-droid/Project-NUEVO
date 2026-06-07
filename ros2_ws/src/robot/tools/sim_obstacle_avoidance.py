@@ -156,6 +156,32 @@ SCENARIOS = {
             (1830.0, 2785.0),
         ],
     ),
+    # Full Segment 3: CP2 → east → 90° left → north through cones → 90° right →
+    # east → CP3.  Mirrors venue_full_course_test.py's three SEG3 sub-paths
+    # joined into one continuous trajectory.  The planner runs avoidance for
+    # the entire path here (unlike real life where 3A/3C disable avoidance
+    # around the corners) — useful for confirming the avoidance doesn't fire
+    # spuriously during the cornering phases when no cones are nearby.
+    "venue_seg3_full": dict(
+        path_pts      = [
+            (1067.5,  610.0),   # CP2
+            (1525.0,  610.0),   # 90° left corner (east → north)
+            (1525.0, 3500.0),   # 90° right corner (north → east)
+            (1982.5, 3500.0),   # CP3
+        ],
+        spacing       = 400.0,
+        start_pose    = [1067.5, 610.0, 0.0],   # CP2 facing east
+        x_L           = 1525.0,                  # avoidance lane centre = SEG3B centreline
+        field_xlim    = (   900.0, 2150.0),
+        field_ylim    = (   400.0, 3700.0),
+        lane_lines_x  = [1525.0 - 225.5, 1525.0 + 225.5],
+        label         = "Venue SEG3 FULL (CP2 → cones → CP3)",
+        default_cones = [
+            (1830.0, 1565.0),
+            (1220.0, 2175.0),
+            (1830.0, 2785.0),
+        ],
+    ),
 }
 
 _active_scenario_key = "lane_switch"
