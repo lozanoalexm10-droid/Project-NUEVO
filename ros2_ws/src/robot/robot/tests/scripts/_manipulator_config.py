@@ -251,6 +251,43 @@ def snap_to_cup_tier_mm(height_mm: float) -> float:
     """Round a noisy height estimate to the nearest known cup-tier height."""
     return min(_CUP_TIER_HEIGHTS_MM, key=lambda h: abs(h - height_mm))
 
+# ── Competition cup-stack tiers (measured at venue) ───────────────────────────
+# The competition uses three fixed stacks of red Solo cups, each on a 3 mm
+# cardboard pad. Heights are measured from the cardboard top to the top of the
+# cup stack. Verified 2026-06-07.
+CARDBOARD_HEIGHT_MM       = 3.0
+STACK_8CUP_HEIGHT_MM      = 162.0   # 8-cup stack height above cardboard
+STACK_18CUP_HEIGHT_MM     = 225.0   # 18-cup stack height above cardboard
+STACK_24CUP_HEIGHT_MM     = 263.0   # 24-cup stack height above cardboard
+
+# Mallow is a cylinder (vertical axis) ~28 mm tall — pickup centre is half-height.
+MARSHMALLOW_FULL_HEIGHT_MM = 28.0
+_MALLOW_CENTER_OFFSET_MM   = MARSHMALLOW_FULL_HEIGHT_MM / 2.0   # 14 mm
+
+# Mallow-centre z in robot frame (floor = GROUND_Z_MM = -229 mm):
+#   floor + cardboard + stack_height + half_mallow
+MALLOW_Z_STACK_8_MM  = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_8CUP_HEIGHT_MM  + _MALLOW_CENTER_OFFSET_MM  # ≈ -50 mm
+MALLOW_Z_STACK_18_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_18CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ +13 mm
+MALLOW_Z_STACK_24_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_24CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ +51 mm
+
+_VENUE_TIER_HEIGHTS_MM = (
+    MALLOW_Z_STACK_8_MM,
+    MALLOW_Z_STACK_18_MM,
+    MALLOW_Z_STACK_24_MM,
+)
+
+def snap_to_venue_tier_mm(height_mm: float) -> float:
+    """Round a noisy height estimate to the nearest competition-tier height."""
+    return min(_VENUE_TIER_HEIGHTS_MM, key=lambda h: abs(h - height_mm))
+
+# ── Lidar → turntable-frame conversion ────────────────────────────────────────
+# LIDAR_MOUNT_X_MM in hardware_map.py gives the lidar position in BODY frame
+# (origin = wheel midpoint). Manipulator IK uses TURNTABLE frame (origin =
+# turntable axis). Need the body-frame x of the turntable axis to convert.
+# TODO: measure on robot — distance from wheel midpoint to turntable axis along
+# forward direction (positive = turntable is forward of wheel midpoint).
+TURNTABLE_X_IN_BODY_MM   = 320.7    # approximation: assumes turntable axis aligned with lidar mount
+
 # ── Detection ─────────────────────────────────────────────────────────────────
 MARSHMALLOW_CLASS        = "marshmallow"      # class name from vision model
 CUP_CLASS                = "red_cup"          # class name from rule_based_detection.detect_red_cup
