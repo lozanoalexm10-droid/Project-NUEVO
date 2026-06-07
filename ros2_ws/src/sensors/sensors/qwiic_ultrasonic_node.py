@@ -46,6 +46,8 @@ class QwiicUltrasonicNode(Node):
 
         self._pub = self.create_publisher(Range, "/ultrasonic_range", _BEST_EFFORT)
         self._bus = None
+        self._last_err_log = 0.0
+        self._consec_errors = 0
         self._open_bus()
 
         self.create_timer(1.0 / self._rate_hz, self._tick)
@@ -80,19 +82,24 @@ class QwiicUltrasonicNode(Node):
 
     def _read_distance_mm(self) -> int | None:
         """Trigger a measurement and return distance in mm, or None on error."""
-        try:
+        if self._bus is None:
+            self._open_bus()
             if self._bus is None:
-                self._open_bus()
-                if self._bus is None:
-                    return None
-            # Write any byte to trigger the measurement, then wait for the echo
+                return None
+        try:
             self._bus.write_byte(self._addr, 0x01)
             time.sleep(0.08)
             data = self._bus.read_i2c_block_data(self._addr, 0x01, 2)
+            self._consec_errors = 0
             return (data[0] << 8) | data[1]
-        except Exception as exc:
-            self.get_logger().warn(f"I2C read error: {exc}")
-            self._close_bus()
+        except OSError as exc:
+            self._consec_errors += 1
+            now = time.monotonic()
+            if now - self._last_err_log > 2.0:
+                self.get_logger().warn(
+                    f"I2C read error ({self._consec_errors} consec): {exc}"
+                )
+                self._last_err_log = now
             return None
 
     def _tick(self) -> None:
