@@ -29,7 +29,7 @@ Edit these two lines before each run:
 from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
-START_SEGMENT = 4    # 1–4: segment to begin from; 1 = full course from start
+START_SEGMENT = 1    # 1–4: segment to begin from; 1 = full course from start
 AUTO_START    = True
 
   # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
@@ -91,9 +91,9 @@ SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
 SEG2_CFG  = dict(speed=130, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
 SEG3B_CFG = dict(
-    speed=75, lookahead=150, spacing=400,
-    safe_dist=190, lane_width=451, avoidance_delay=245,
-    obstacles_range=450, view_angle=70.0, alpha_Ld=0.70, offset=324,
+    speed=75, lookahead=120, spacing=400,
+    safe_dist=180, lane_width=451, avoidance_delay=245,
+    obstacles_range=500, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
 SEG4_CFG  = dict(speed=120, lookahead=100, spacing=50)
@@ -145,11 +145,11 @@ SEG2_PATH = [
 # Obstacle-zone avoidance entry/exit offsets — how far inside the obstacle
 # zone the avoidance planner activates and deactivates. Keeps the planner from
 # fighting the 90° corner turns or treating the north/south walls as obstacles.
-OBS_ENTRY_OFFSET_MM = 100.0  # Was 400. First cone sits ~560 mm past entry;
-                             # 400 mm of approach left only ~160 mm before the
-                             # cone hit obstacles_range=450 — too tight for a
-                             # 130 mm lateral shift at speed=75 mm/s. 100 mm
-                             # gives ~460 mm runway, matching the sim scenario.
+OBS_ENTRY_OFFSET_MM = 400.0  # SEG3A drives the robot this far north of the
+                             # corner before SEG3B's avoidance takes over, giving
+                             # it time to finish the 90° turn and settle on the
+                             # centerline pointing north before any cones are
+                             # considered.
 OBS_EXIT_OFFSET_MM  = 900.0  # Goal must sit OUTSIDE obstacles_range (=450 in SEG3B_CFG)
                              # so the planner doesn't see the north wall as an obstacle
                              # and detour into a 180 right before exiting the zone.

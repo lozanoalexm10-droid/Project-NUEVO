@@ -681,25 +681,23 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             if (len(obstacles_r) > 0) and (self.avoidance_counter <= 0) and spatial_clear:
                 # Step 3: Find the cloest obstacle, and decide which lane to switch.
                 dists = np.linalg.norm(obstacles_r, axis=1)
-                # min_dist = np.min(dists)
                 arg_dist = np.argmin(dists)
                 closest_pt = obstacles[arg_dist,:] # closest obstacle point in world frame
 
-                # Compute required lateral shift so the detour path clears the cone
-                # by exactly safe_dist, regardless of which side the robot is on.
-                # Target clearance point is always on the far side of the cone from center.
-                if closest_pt[0] < self.x_L:
-                    # Cone is left of centre → detour right, past cone_x + safe_dist
-                    needed_offset = max((closest_pt[0] + self.safe_dist) - x, 0.0)
-                else:
-                    # Cone is right of centre → detour left, past cone_x - safe_dist
-                    needed_offset = max(x - (closest_pt[0] - self.safe_dist), 0.0)
+                # Clearance gate: only commit to a lane switch if the robot doesn't
+                # already have safe_dist of lateral clearance from the cone. With
+                # cones placed wide of the centerline (e.g. ±305 mm) and safe_dist
+                # smaller than that, the robot can drive straight through without
+                # ever swerving — which avoids the failure where a full-offset
+                # shift toward the empty lane lands the robot on top of the NEXT
+                # cone in that lane.
+                lateral_gap = abs(closest_pt[0] - x)
+                needed_offset = max(self.safe_dist - lateral_gap, 0.0)
 
                 change_lane = False
                 if needed_offset > 10.0 and (
-                    (closest_pt[0] < self.x_L and self.current_lane != 'Right') or
-                    (closest_pt[0] > self.x_L and self.current_lane != 'Left')
-                ):
+                        (closest_pt[0] < self.x_L and self.current_lane != 'Right') or
+                        (closest_pt[0] > self.x_L and self.current_lane != 'Left')):
                     change_lane = True
                     # reduce lookahead distance to track added waypoints more precisely.
                     self.Ld = self.raw_LD * self.alpha_Ld
@@ -712,9 +710,9 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
 
                 # Generate a hat-shaped detour: entry → hold past obstacle → return to center.
                 if change_lane:
-                    dx = needed_offset if closest_pt[0] < self.x_L else -needed_offset
-                    self.current_lane = 'Center'
-                    print('Obstacle avoidance: shift', round(dx), 'mm, returning to center')
+                    dx = self.offset if closest_pt[0] < self.x_L else -self.offset
+                    self.current_lane = 'Right' if closest_pt[0] < self.x_L else 'Left'
+                    print('Change Lane!!! Current lane is:', self.current_lane)
 
                     # Entry: reach offset, but cap before the cone so the robot
                     # finishes the lateral shift before reaching the obstacle.
