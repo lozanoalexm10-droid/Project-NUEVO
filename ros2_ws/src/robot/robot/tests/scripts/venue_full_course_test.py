@@ -29,7 +29,7 @@ Edit these two lines before each run:
 from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
-START_SEGMENT = 1     # 1–4: segment to begin from; 1 = full course from start
+START_SEGMENT = 4    # 1–4: segment to begin from; 1 = full course from start
 AUTO_START    = True
 
   # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
@@ -86,22 +86,17 @@ STOP_SIGN_MIN_CONF = 0.50
 #   SEG3A : east approach to obstacle zone
 #   SEG3B : north through obstacle zone (avoidance ON)
 #   SEG3C : finish north run + 90° right turn + east to CP3 (avoidance OFF)
-#   SEG4A : CP3 → 90° right-turn corner onto lane 5 (normal speed)
-#   SEG4B : lane 5 south → finish (slow speed — bump zone)
+#   SEG4  : CP3 → 90° right-turn corner → lane 5 south → finish (single path)
 SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
 SEG2_CFG  = dict(speed=130, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
 SEG3B_CFG = dict(
-    speed=75, lookahead=115, spacing=400,
+    speed=75, lookahead=150, spacing=400,
     safe_dist=190, lane_width=451, avoidance_delay=245,
     obstacles_range=450, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
-SEG4A_CFG = dict(speed=120, lookahead=300, spacing=50)
-# Bump-zone speed: lane 5 has ~155 mm speed bumps placed randomly so single
-# tires strike them — slow here so impacts are gentler and GPS fusion has
-# more time to correct any push-induced drift.
-SEG4B_CFG = dict(speed=70,  lookahead=250, spacing=50)
+SEG4_CFG  = dict(speed=120, lookahead=100, spacing=50)
 
 # ── Course geometry (mm, absolute odometry frame, x=east y=north) ─────────────
 X_LANE1   =    0.0    # lane 1 centre (robot start x)
@@ -150,7 +145,11 @@ SEG2_PATH = [
 # Obstacle-zone avoidance entry/exit offsets — how far inside the obstacle
 # zone the avoidance planner activates and deactivates. Keeps the planner from
 # fighting the 90° corner turns or treating the north/south walls as obstacles.
-OBS_ENTRY_OFFSET_MM = 400.0
+OBS_ENTRY_OFFSET_MM = 100.0  # Was 400. First cone sits ~560 mm past entry;
+                             # 400 mm of approach left only ~160 mm before the
+                             # cone hit obstacles_range=450 — too tight for a
+                             # 130 mm lateral shift at speed=75 mm/s. 100 mm
+                             # gives ~460 mm runway, matching the sim scenario.
 OBS_EXIT_OFFSET_MM  = 900.0  # Goal must sit OUTSIDE obstacles_range (=450 in SEG3B_CFG)
                              # so the planner doesn't see the north wall as an obstacle
                              # and detour into a 180 right before exiting the zone.
@@ -181,16 +180,19 @@ SEG3_EXIT_PATH = [
     (X_OBS_MID + 457.5, Y_TOP),            # CP3: 457.5 mm east of corner = (1982.5, 3660)
 ]
 
-# Segment 4: CP3 → lane 5 south → manipulation station.
+# Segment 4: CP3 → corner → lane 5 south → manipulation station.
 #   Stop-sign detection active throughout. 3-second dwell on first detection.
-#   Split into A (corner approach, normal speed) and B (south straight — slow
-#   through the speed-bump zone).
-SEG4A_PATH = [
-    (X_OBS_MID + 457.5, Y_TOP), # CP3
-    (X_LANE5, Y_TOP),            # 90° right-turn corner (now south)
+#   Single config/speed — bumps are small enough to drive over at normal pace.
+#   Path is loaded in two sub-legs internally (east to corner, then south to
+#   finish) so PP can't anticipate the 90° turn from a cold-start standalone
+#   run — anticipating it collapses linear velocity below the motor stiction
+#   floor and the robot jitters in place.
+SEG4_EAST_PATH = [
+    (X_OBS_MID + 457.5, Y_TOP),  # CP3
+    (X_LANE5, Y_TOP),            # 90° right-turn corner
 ]
-SEG4B_PATH = [
-    (X_LANE5, Y_TOP),            # corner (start of lane-5 south)
+SEG4_SOUTH_PATH = [
+    (X_LANE5, Y_TOP),            # corner
     (FINISH_X, FINISH_Y),        # manipulation station
 ]
 
@@ -326,7 +328,7 @@ def run(robot: Robot) -> None:  # noqa: C901
     elif START_SEGMENT == 3:
         _load_path(robot, _op(SEG3_APPROACH_PATH), SEG3A_CFG, obstacle_avoidance=False)
     elif START_SEGMENT == 4:
-        _load_path(robot, _op(SEG4A_PATH), SEG4A_CFG, obstacle_avoidance=False)
+        _load_path(robot, _op(SEG4_EAST_PATH), SEG4_CFG, obstacle_avoidance=False)
 
     if not AUTO_START:
         # Stepper API is fire-and-forget (publishes ROS msgs, no ack), so the
@@ -365,7 +367,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                                    # was queuing set_velocity commands and stalling the
                                    # first move after green-light detection.
     seg3_phase: str = "approach"   # 'approach' | 'obstacle' | 'exit'
-    seg4_phase: str = "approach"   # 'approach' (to corner) | 'south' (bump zone)
+    seg4_leg:   str = "east"       # 'east' (to corner) | 'south' (to finish)
     stop_sign_seen:    bool  = False
     stop_sign_pause_t: float = 0.0
     idle_last_debug_t: float = 0.0   # rate-limit IDLE vision debug print
@@ -496,13 +498,13 @@ def run(robot: Robot) -> None:  # noqa: C901
                 elif seg3_phase == "exit":
                     print(f"[FSM] SEG3 complete — CP3 reached at abs=({abs_x:.0f},{abs_y:.0f}) "
                           f"θ={math.degrees(pth):.1f}°.")
-                    _load_path(robot, _op(SEG4A_PATH), SEG4A_CFG, obstacle_avoidance=False)
-                    seg4_phase = "approach"
+                    _load_path(robot, _op(SEG4_EAST_PATH), SEG4_CFG, obstacle_avoidance=False)
+                    seg4_leg = "east"
                     state = "SEG4"
 
-        # ── SEG4: CP3 → complete top-right U-turn → lane 5 south → Finish ─────
-        #   Stop-sign detection active. First detection triggers a 3-second hold
-        #   (red LED). After dwell, nav resumes to the manipulation station.
+        # ── SEG4: CP3 → corner → lane 5 south → Finish (single path) ──────────
+        #   Stop-sign detection active. First close-enough detection triggers a
+        #   3-second hold (red LED). After dwell, nav resumes to the finish.
         elif state == "SEG4":
             if robot.get_button(Button.BTN_2):
                 _estop(robot); return
@@ -547,11 +549,11 @@ def run(robot: Robot) -> None:  # noqa: C901
                     robot.set_led(LED.GREEN, 255)
                     robot.set_led(LED.ORANGE, 0)
                     if robot._nav_follow_pp_path_loop() == "IDLE":
-                        if seg4_phase == "approach":
-                            print("[FSM] SEG4A done — entering lane-5 bump zone (slow).")
-                            _load_path(robot, _op(SEG4B_PATH), SEG4B_CFG,
+                        if seg4_leg == "east":
+                            print("[FSM] SEG4 east leg done — loading south leg.")
+                            _load_path(robot, _op(SEG4_SOUTH_PATH), SEG4_CFG,
                                        obstacle_avoidance=False)
-                            seg4_phase = "south"
+                            seg4_leg = "south"
                         else:
                             print("[FSM] SEG4 complete — at manipulation station.")
                             robot.stop()
@@ -562,15 +564,9 @@ def run(robot: Robot) -> None:  # noqa: C901
                 robot.set_led(LED.GREEN, 255)
                 robot.set_led(LED.ORANGE, 0)
                 if robot._nav_follow_pp_path_loop() == "IDLE":
-                    if seg4_phase == "approach":
-                        print("[FSM] SEG4A done — entering lane-5 bump zone (slow).")
-                        _load_path(robot, _op(SEG4B_PATH), SEG4B_CFG,
-                                   obstacle_avoidance=False)
-                        seg4_phase = "south"
-                    else:
-                        print("[FSM] SEG4 complete — at manipulation station.")
-                        robot.stop()
-                        state = "DONE"
+                    print("[FSM] SEG4 complete — at manipulation station.")
+                    robot.stop()
+                    state = "DONE"
 
         # ── DONE ──────────────────────────────────────────────────────────────
         elif state == "DONE":

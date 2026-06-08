@@ -54,8 +54,10 @@ from robot.tests.scripts._manipulator_config import (
 )
 
 # ── Scan plan ────────────────────────────────────────────────────────────────
-# Five pan positions spaced across the campan's physical envelope.
-SCAN_CAMPAN_DEG = [60.0, 30.0, 0.0, -30.0, -60.0]
+# Single forward capture only — campan stays at 0° (straight ahead).  The
+# multi-position sweep is disabled while the camera mount/tilt is being
+# characterised; restore the full list when you want a full scan again.
+SCAN_CAMPAN_DEG = [0.0]
 
 # Wait this long after panning before reading detections so the vision
 # stream catches up with the new frame.
@@ -78,9 +80,12 @@ SCAN_SNAPSHOT_DIR = Path("/runtime_output/mallow_detection_range")
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _campan_to_deg(robot: Robot, target_deg: float) -> None:
+    # Block until the motor reports idle, otherwise a 30–60° hop (2.6–3.7 s
+    # under the conservative campan vel/accel) is still in flight when the
+    # snapshot fires and every frame comes out motion-blurred at the wrong
+    # angle.  PAN_SETTLE_S handles the mechanical ringing afterwards.
     robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(target_deg),
-                    StepMoveType.ABSOLUTE, blocking=False)
-    time.sleep(1.0)
+                    StepMoveType.ABSOLUTE, blocking=True)
 
 
 def _bbox_center(det: dict) -> tuple[float, float]:
@@ -205,8 +210,7 @@ def run(robot: Robot) -> None:  # noqa: C901
     next_tick   = time.monotonic()
 
     print("[TEST] ── Mallow Detection Range ────────────────────────────────")
-    print("[TEST] No arm motion. Put the arm in a safe stow pose first.")
-    print(f"[TEST] Will pan campan to: {SCAN_CAMPAN_DEG} degrees")
+    print("[TEST] No arm motion, no campan motion. Camera stays wherever it sits.")
     print(f"[TEST] Min confidence for log: {DET_MIN_CONFIDENCE:.2f}")
     print( "[TEST] ───────────────────────────────────────────────────────────")
 
@@ -243,95 +247,105 @@ def run(robot: Robot) -> None:  # noqa: C901
                 print(f"[TEST] Starting in {n}...")
                 time.sleep(1.0)
             print("[TEST] GO")
-            state = "ENABLE_CAMPAN"
+            state = "CAPTURE"
 
-        # ── ENABLE_CAMPAN ───────────────────────────────────────────────────
-        elif state == "ENABLE_CAMPAN":
-            robot.step_set_config(CAMPAN_STEPPER, CAMPAN_MAX_VELOCITY, CAMPAN_ACCELERATION)
-            robot.step_enable(CAMPAN_STEPPER)
-            _campan_to_deg(robot, 0.0)
-            time.sleep(0.3)
-            state = "SCAN"
+        # ── CAPTURE ────────────────────────────────────────────────────────
+        # Single forward capture — campan is NOT enabled or moved; we trust
+        # whoever staged the test to leave it pointed straight.  Reads every
+        # detection class the vision node emitted on the last frame.
+        elif state == "CAPTURE":
+            # The vision node + camera open + first ncnn inference take a few
+            # seconds on the Pi.  Poll until vision reports a non-zero image
+            # size (its first frame has landed) — then add a small buffer so
+            # the detector has time to run on at least one or two frames.
+            print("[TEST] Waiting for vision to warm up...")
+            warmup_deadline = time.monotonic() + 10.0
+            img_w, img_h = 0, 0
+            while time.monotonic() < warmup_deadline:
+                img_w, img_h = robot.get_detection_image_size()
+                if img_w > 0 and img_h > 0:
+                    break
+                time.sleep(0.2)
+            if img_w == 0 or img_h == 0:
+                print("[TEST] WARNING: vision never reported a frame size — "
+                      "publishing may be down; proceeding anyway.")
+            else:
+                print(f"[TEST] Vision online: {img_w}x{img_h}. "
+                      "Waiting 2 s for detections to stabilise.")
+                time.sleep(2.0)
 
-        # ── SCAN ────────────────────────────────────────────────────────────
-        elif state == "SCAN":
-            img_w, img_h = robot.get_detection_image_size()
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-            print(f"[TEST] SCAN run_id={run_id}  image={img_w}x{img_h}")
+            print(f"[TEST] CAPTURE run_id={run_id}  image={img_w}x{img_h}")
 
-            for pan_deg in SCAN_CAMPAN_DEG:
-                _campan_to_deg(robot, pan_deg)
-                time.sleep(PAN_SETTLE_S)
+            snap = _save_snapshot(run_id, "pan+00")
+            snap_str = str(snap) if snap is not None else "(no snapshot — debug_save_enabled?)"
 
-                snap = _save_snapshot(run_id, f"pan{int(round(pan_deg)):+03d}")
-                snap_str = str(snap) if snap is not None else "(no snapshot — debug_save_enabled?)"
+            all_dets = robot.get_detections()
+            lidar_points = _lidar_clusters_in_zone(robot) if lidar_enabled else []
 
-                mallow_dets = robot.get_detections(MARSHMALLOW_CLASS)
-                lidar_points = _lidar_clusters_in_zone(robot) if lidar_enabled else []
+            print(f"\n[CAPTURE] detections={len(all_dets)}  "
+                  f"lidar_pts={len(lidar_points)}  frame={snap_str}")
 
-                print(f"\n[SCAN] pan={pan_deg:+5.1f}°  "
-                      f"detections={len(mallow_dets)}  "
-                      f"lidar_pts={len(lidar_points)}  "
-                      f"frame={snap_str}")
+            if not all_dets:
+                print("[CAPTURE]   (no detections in frame)")
+            else:
+                by_class: dict[str, int] = {}
+                for det in all_dets:
+                    by_class[det["class_name"]] = by_class.get(det["class_name"], 0) + 1
+                summary = ", ".join(f"{n}× {c}" for c, n in by_class.items())
+                print(f"[CAPTURE]   classes: {summary}")
 
-                if not mallow_dets:
-                    print("[SCAN]   (no mallow detections at this pan)")
-                    continue
+            for det in all_dets:
+                cls  = det["class_name"]
+                conf = float(det["confidence"])
+                cam_bearing   = _bearing_in_camera_frame_deg(det, img_w)
+                world_bearing = cam_bearing  # campan assumed at 0°
+                cam_dist = _mallow_dist_from_camera_mm(det, img_w)
+                x_mm, y_mm = _camera_to_robot_frame(world_bearing, cam_dist)
+                z_raw  = _height_from_bbox_mm(det, img_w, img_h, cam_dist)
+                z_snap = snap_to_venue_tier_mm(z_raw)
 
-                for det in mallow_dets:
-                    conf = float(det["confidence"])
-                    cam_bearing = _bearing_in_camera_frame_deg(det, img_w)
-                    world_bearing = pan_deg + cam_bearing
-                    cam_dist = _mallow_dist_from_camera_mm(det, img_w)
-                    x_mm, y_mm = _camera_to_robot_frame(world_bearing, cam_dist)
-                    z_raw = _height_from_bbox_mm(det, img_w, img_h, cam_dist)
-                    z_snap = snap_to_venue_tier_mm(z_raw)
+                lidar_xy = _nearest_lidar_to_bearing(
+                    lidar_points, world_bearing, LIDAR_MATCH_DEG,
+                )
+                lidar_x = lidar_xy[0] if lidar_xy is not None else None
+                lidar_y = lidar_xy[1] if lidar_xy is not None else None
 
-                    lidar_xy = _nearest_lidar_to_bearing(
-                        lidar_points, world_bearing, LIDAR_MATCH_DEG,
-                    )
-                    lidar_x = lidar_xy[0] if lidar_xy is not None else None
-                    lidar_y = lidar_xy[1] if lidar_xy is not None else None
+                keep = conf >= DET_MIN_CONFIDENCE
+                tag = "KEEP" if keep else "skip"
+                print(f"[CAPTURE]   {tag} {cls:14s} conf={conf:.2f}  "
+                      f"bearing={cam_bearing:+5.1f}°  "
+                      f"cam_dist={cam_dist:5.0f} mm")
+                print(f"[CAPTURE]     robot_xyz=({x_mm:+5.0f}, {y_mm:+5.0f}, "
+                      f"{z_raw:+5.0f}) mm  tier_z={z_snap:+5.0f} mm")
+                if lidar_xy is not None:
+                    dx = lidar_x - CAMERA_FORWARD_OFFSET_MM
+                    dy = lidar_y
+                    lidar_cam_dist = math.hypot(dx, dy)
+                    delta = lidar_cam_dist - cam_dist
+                    print(f"[CAPTURE]     lidar nearest pt: "
+                          f"xy=({lidar_x:+5.0f}, {lidar_y:+5.0f}) mm  "
+                          f"from_camera={lidar_cam_dist:5.0f} mm  "
+                          f"(Δ vs camera: {delta:+5.0f} mm)")
+                else:
+                    print("[CAPTURE]     no lidar point within "
+                          f"±{LIDAR_MATCH_DEG:.0f}° of this bearing")
 
-                    keep = conf >= DET_MIN_CONFIDENCE
-                    tag = "KEEP" if keep else "skip"
-                    print(f"[SCAN]   {tag} conf={conf:.2f}  "
-                          f"cam_bearing={cam_bearing:+5.1f}°  "
-                          f"world_bearing={world_bearing:+5.1f}°  "
-                          f"cam_dist={cam_dist:5.0f} mm")
-                    print(f"[SCAN]     robot_xyz=({x_mm:+5.0f}, {y_mm:+5.0f}, "
-                          f"{z_raw:+5.0f}) mm  tier_z={z_snap:+5.0f} mm")
-                    if lidar_xy is not None:
-                        lidar_dist = math.hypot(lidar_x, lidar_y)
-                        # Distance from camera origin to compare with cam_dist:
-                        dx = lidar_x - CAMERA_FORWARD_OFFSET_MM
-                        dy = lidar_y
-                        lidar_cam_dist = math.hypot(dx, dy)
-                        delta = lidar_cam_dist - cam_dist
-                        print(f"[SCAN]     lidar nearest pt: "
-                              f"xy=({lidar_x:+5.0f}, {lidar_y:+5.0f}) mm  "
-                              f"from_camera={lidar_cam_dist:5.0f} mm  "
-                              f"(Δ vs camera: {delta:+5.0f} mm)")
-                    else:
-                        print("[SCAN]     no lidar point within "
-                              f"±{LIDAR_MATCH_DEG:.0f}° of this bearing")
+                if keep and cls == MARSHMALLOW_CLASS:
+                    hits.append(MallowHit(
+                        pan_deg=0.0,
+                        conf=conf,
+                        cam_bearing_deg=cam_bearing,
+                        world_bearing_deg=world_bearing,
+                        cam_dist_mm=cam_dist,
+                        x_mm=x_mm,
+                        y_mm=y_mm,
+                        z_raw_mm=z_raw,
+                        z_snap_mm=z_snap,
+                        lidar_x_mm=lidar_x,
+                        lidar_y_mm=lidar_y,
+                    ))
 
-                    if keep:
-                        hits.append(MallowHit(
-                            pan_deg=pan_deg,
-                            conf=conf,
-                            cam_bearing_deg=cam_bearing,
-                            world_bearing_deg=world_bearing,
-                            cam_dist_mm=cam_dist,
-                            x_mm=x_mm,
-                            y_mm=y_mm,
-                            z_raw_mm=z_raw,
-                            z_snap_mm=z_snap,
-                            lidar_x_mm=lidar_x,
-                            lidar_y_mm=lidar_y,
-                        ))
-
-            _campan_to_deg(robot, 0.0)
             state = "REPORT"
 
         # ── REPORT ──────────────────────────────────────────────────────────
@@ -360,7 +374,6 @@ def run(robot: Robot) -> None:  # noqa: C901
                       f"xyz=({best.x_mm:+.0f}, {best.y_mm:+.0f}, {best.z_snap_mm:+.0f}) mm  "
                       f"conf={best.conf:.2f}")
             print( "[TEST] ──────────────────────────────────────────────────────")
-            robot.step_disable(CAMPAN_STEPPER)
             state = "DONE"
 
         # ── DONE ────────────────────────────────────────────────────────────

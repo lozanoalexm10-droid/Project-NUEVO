@@ -11,6 +11,46 @@ The implementation lives in
 
 ---
 
+## 0. Current Status (handoff snapshot — 2026-06-08)
+
+What works:
+* **Purple-mallow vision mask is live.** `rule_based_detection.detect_marshmallow`
+  now uses a blue-violet HSV range (`H 120-160, S 60+, V 50+`) and labels
+  detections `color=purple`. Verified on saved frames with the debug tool
+  `ros2_ws/src/robot/tools/debug_mallow_hsv.py` — a 1280×720 snapshot of the
+  competition mallow returns a single contour at conf ≈ 0.94. Run that script
+  against any `/runtime_output/mallow_detection_range/scan_*.jpg` to retune
+  the HSV range without rebuilding ROS.
+* **Cup-gating relaxed for short stacks.** `filter_marshmallows_on_red_cups`
+  used to drop every mallow detection when no red cup was in frame. It now
+  passes mallows through unfiltered when no cup is detected (needed for the
+  9-cup stack where the cup falls below the bottom of frame), but still
+  gates on cup position when a cup *is* visible.
+* **Single-frame test:** `mallow_detection_range_test.py` has been
+  simplified to one forward capture (no campan sweep). Includes a
+  vision-warm-up poll on `robot.get_detection_image_size()` so the test
+  no longer races the vision node's first inference.
+
+What does NOT work yet / needs attention:
+* **LiDAR is mounted upside-down.** The mount needs to be flipped before
+  the demo. Until that's done, lidar y is mirrored — which means
+  `robot.get_lidar_obstacles_robot()` reports targets on the wrong side of
+  the robot. **This will also corrupt nav-time obstacle avoidance**, not
+  just the manipulator's cup-stack mapping — anything reading lidar in body
+  or turntable frame will see obstacles flipped left↔right. Either rotate
+  the lidar physically or add a y-negation in `sensors.py` /
+  `get_lidar_obstacles_robot()` before relying on the data.
+* **No camera-tilt term in the height kinematics.** The campan camera is
+  pitched downward by ~10° at rest. `_height_from_bbox_mm` assumes a
+  horizontal optical axis — every tier-z is biased low by
+  `dist · tan(tilt)`. Either re-level the mount or add a
+  `CAMERA_PITCH_DEG` constant to `_manipulator_config.py` and account for
+  it in the elevation calc.
+* **Lidar/camera test timing on the simplified test:** the no-campan test
+  needs the warm-up poll added today to avoid a race. Don't remove it.
+
+---
+
 ## 1. What the robot has to figure out
 
 Three pieces of information define a successful pick:
@@ -28,9 +68,12 @@ in `_manipulator_config.py` are correct.
 
 ## 2. Why LiDAR for x, y and camera for z
 
-The competition setup is three fixed cup stacks (8, 18, 24 cups), one of
-which has a marshmallow on top. The marshmallow gets coloured purple with a
-Sharpie before the run to give the camera a high-contrast target.
+The competition setup is **four** fixed cup stacks (9, 11, 14, 16 cups) —
+chosen because they are the four largest stacks that still fit entirely
+inside the camera frame at the typical mallow-detection distance. One of
+them has a marshmallow on top. The marshmallow is dyed **purple** before
+the run to give the camera a high-contrast target; the rule-based detector
+matches a blue-violet HSV range, not the original white range.
 
 Each sensor has one job it does well:
 
@@ -54,27 +97,29 @@ Each sensor has one job it does well:
 ## 3. Measured competition heights
 
 Stacks sit on a 3 mm cardboard pad. Heights to the top of each stack,
-measured 2026-06-07:
+measured 2026-06-08:
 
-| Stack | Stack height above cardboard | Top-of-stack z in robot frame | Mallow-centre z in robot frame |
-|---|---|---|---|
-| 8 cups  | 162 mm | `floor + 3 + 162 = 165 mm`  → `z = −64 mm` | `−64 + 14 = −50 mm` |
-| 18 cups | 225 mm | `floor + 3 + 225 = 228 mm`  → `z = −1 mm`  | `−1 + 14 = +13 mm` |
-| 24 cups | 263 mm | `floor + 3 + 263 = 266 mm`  → `z = +37 mm` | `+37 + 14 = +51 mm` |
+| Stack   | Stack height above cardboard | Top-of-stack z in robot frame                  | Mallow-centre z in robot frame |
+|---------|------------------------------|------------------------------------------------|--------------------------------|
+| 9 cups  | 168 mm | `floor + 3 + 168 = 171 mm`  → `z = −76 mm` | `−76 + 14 = −62 mm` |
+| 11 cups | 180 mm | `floor + 3 + 180 = 183 mm`  → `z = −64 mm` | `−64 + 14 = −50 mm` |
+| 14 cups | 200 mm | `floor + 3 + 200 = 203 mm`  → `z = −44 mm` | `−44 + 14 = −30 mm` |
+| 16 cups | 214 mm | `floor + 3 + 214 = 217 mm`  → `z = −30 mm` | `−30 + 14 = −16 mm` |
 
-Robot frame: floor is at `GROUND_Z_MM = −229 mm` (base plate = 0). A 28 mm
+Robot frame: floor is at `GROUND_Z_MM = −247 mm` (base plate = 0). A 28 mm
 tall marshmallow has its centre 14 mm above the surface it sits on.
 
 These are encoded in `_manipulator_config.py` as
 
 ```python
-MALLOW_Z_STACK_8_MM  = -50
-MALLOW_Z_STACK_18_MM = +13
-MALLOW_Z_STACK_24_MM = +51
+MALLOW_Z_STACK_9_MM  ≈ -62
+MALLOW_Z_STACK_11_MM ≈ -50
+MALLOW_Z_STACK_14_MM ≈ -30
+MALLOW_Z_STACK_16_MM ≈ -16
 ```
 
 and the helper `snap_to_venue_tier_mm(z)` rounds a noisy height estimate
-to the nearest of those three values.
+to the nearest of those four values.
 
 ## 4. LiDAR cup-stack mapping
 
@@ -109,6 +154,14 @@ Tunables live at the top of the test file: `CUP_ZONE_*`,
 the body→turntable conversion uses `TURNTABLE_X_IN_BODY_MM` from
 `_manipulator_config.py`, which currently defaults to the lidar mount X
 and should be measured directly on the chassis.
+
+> **⚠ Lidar mount is currently upside-down.** Until the physical mount is
+> rotated (or a y-negation is added in `robot_impl/sensors.py`), the y
+> coordinates returned by `get_lidar_obstacles_robot()` are mirrored. The
+> cup-stack mapper will see the left-most stack on the right and vice
+> versa — and **nav-time obstacle avoidance will be affected** too,
+> because every consumer of the lidar topic shares this frame. Flip the
+> mount before trusting any lidar-derived x/y.
 
 ## 5. Vision target identification
 
@@ -194,14 +247,17 @@ DONE          — green LED, robot.stop()
 
 ## 8. Known limitations and acceptable failures
 
-* **Three-stack assumption.** The mapper expects 3 cup stacks. If it finds
-  zero it aborts. If it finds more than 3, the extras are scanned anyway —
-  the highest-confidence vision detection still wins. This is safe.
+* **Four-stack assumption.** The mapper now expects 4 cup stacks. If it
+  finds zero it aborts. If it finds more than 4, the extras are scanned
+  anyway — the highest-confidence vision detection still wins. This is
+  safe. Adjust `CUP_MIN_POINTS_PER_STACK` if the lidar is fragmenting one
+  stack into two clusters.
 * **Tier-snap can be wrong by one tier** if the camera height estimate is
-  noisy enough to land between two tiers. Mitigation: the three tiers are
-  ≥63 mm apart, the camera's bbox-vertical accuracy is ~±20 mm at typical
-  cup distances, so a one-tier error is unlikely but possible. If it
-  becomes a problem, add a sanity-check using the cluster's z-projection
+  noisy enough to land between two tiers. With the new 4-tier set the
+  spacing is **tighter** (~12-20 mm centre-to-centre vs 63 mm in the old
+  3-tier set), so a one-tier error is more likely than before. The
+  camera-tilt bias documented in §0 makes this worse — fix that first.
+  If it's still noisy, add a sanity-check using the cluster's z-projection
   from the lidar plane (lidar mount height vs. cup top height).
 * **No closed-loop feedback during the pick.** Once IK is computed, the
   arm moves to the commanded angles open-loop. If the IK calibration is
@@ -253,7 +309,10 @@ The lidar node (`rplidar_c1_node`) is in the default launch.
 
 | File | Change |
 |---|---|
-| `_manipulator_config.py` | Added `CARDBOARD_HEIGHT_MM`, `STACK_*CUP_HEIGHT_MM`, `MARSHMALLOW_FULL_HEIGHT_MM`, `MALLOW_Z_STACK_*_MM`, `snap_to_venue_tier_mm`, `TURNTABLE_X_IN_BODY_MM` |
+| `_manipulator_config.py` | Added `CARDBOARD_HEIGHT_MM`, `STACK_*CUP_HEIGHT_MM`, `MARSHMALLOW_FULL_HEIGHT_MM`, `MALLOW_Z_STACK_*_MM`, `snap_to_venue_tier_mm`, `TURNTABLE_X_IN_BODY_MM`.  Stack sizes were 7/10/13/18 (then 8/18/24 earlier); current set is **9/11/14/16 cups** with measured heights 168/180/200/214 mm. |
 | `robot_impl/sensors.py` | Added `get_lidar_obstacles_robot()` to expose the raw robot-frame point cloud |
 | `tests/scripts/lidar_cup_pick_place_test.py` | New — the full FSM and helpers |
+| `tests/scripts/mallow_detection_range_test.py` | Simplified to a single forward capture (no campan sweep); added a vision-warm-up poll so detections aren't read before the node publishes its first frame |
+| `vision/vision/rule_based_detection.py` | Swapped white HSV mask → purple (H 120-160 S 60+ V 50+), changed `color` attribute to "purple", made `filter_marshmallows_on_red_cups` pass mallows through when no red cup is in frame |
+| `tools/debug_mallow_hsv.py` | New host/container script — runs the live detector against a saved snapshot, dumps mask images, and reports HSV stats so you can retune the purple range without rebuilding ROS |
 | `MANIPULATOR_TASKS.md` | This document |

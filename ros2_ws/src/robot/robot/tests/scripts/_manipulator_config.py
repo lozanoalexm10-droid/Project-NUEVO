@@ -252,28 +252,31 @@ def snap_to_cup_tier_mm(height_mm: float) -> float:
     return min(_CUP_TIER_HEIGHTS_MM, key=lambda h: abs(h - height_mm))
 
 # ── Competition cup-stack tiers (measured at venue) ───────────────────────────
-# The competition uses three fixed stacks of red Solo cups, each on a 3 mm
-# cardboard pad. Heights are measured from the cardboard top to the top of the
-# cup stack. Verified 2026-06-07.
+# Competition uses four fixed stacks of red Solo cups, each on a 3 mm cardboard
+# pad.  Stack sizes (9, 11, 14, 16 cups) are the four heights that still fit
+# inside the camera frame at the competition mallow distance.  Heights measured
+# from the cardboard top to the top of the cup stack (verified 2026-06-08).
 CARDBOARD_HEIGHT_MM       = 3.0
-STACK_8CUP_HEIGHT_MM      = 162.0   # 8-cup stack height above cardboard
-STACK_18CUP_HEIGHT_MM     = 225.0   # 18-cup stack height above cardboard
-STACK_24CUP_HEIGHT_MM     = 263.0   # 24-cup stack height above cardboard
+STACK_9CUP_HEIGHT_MM      = 168.0   # 9-cup  stack height above cardboard (mm)
+STACK_11CUP_HEIGHT_MM     = 180.0   # 11-cup stack height above cardboard (mm)
+STACK_14CUP_HEIGHT_MM     = 200.0   # 14-cup stack height above cardboard (mm)
+STACK_16CUP_HEIGHT_MM     = 214.0   # 16-cup stack height above cardboard (mm)
 
 # Mallow is a cylinder (vertical axis) ~28 mm tall — pickup centre is half-height.
 MARSHMALLOW_FULL_HEIGHT_MM = 28.0
 _MALLOW_CENTER_OFFSET_MM   = MARSHMALLOW_FULL_HEIGHT_MM / 2.0   # 14 mm
 
-# Mallow-centre z in robot frame (floor = GROUND_Z_MM = -229 mm):
-#   floor + cardboard + stack_height + half_mallow
-MALLOW_Z_STACK_8_MM  = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_8CUP_HEIGHT_MM  + _MALLOW_CENTER_OFFSET_MM  # ≈ -50 mm
-MALLOW_Z_STACK_18_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_18CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ +13 mm
-MALLOW_Z_STACK_24_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_24CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ +51 mm
+# Mallow-centre z in robot frame:  floor + cardboard + stack_height + half_mallow
+MALLOW_Z_STACK_9_MM  = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_9CUP_HEIGHT_MM  + _MALLOW_CENTER_OFFSET_MM  # ≈ -62 mm
+MALLOW_Z_STACK_11_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_11CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ -50 mm
+MALLOW_Z_STACK_14_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_14CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ -30 mm
+MALLOW_Z_STACK_16_MM = GROUND_Z_MM + CARDBOARD_HEIGHT_MM + STACK_16CUP_HEIGHT_MM + _MALLOW_CENTER_OFFSET_MM  # ≈ -16 mm
 
 _VENUE_TIER_HEIGHTS_MM = (
-    MALLOW_Z_STACK_8_MM,
-    MALLOW_Z_STACK_18_MM,
-    MALLOW_Z_STACK_24_MM,
+    MALLOW_Z_STACK_9_MM,
+    MALLOW_Z_STACK_11_MM,
+    MALLOW_Z_STACK_14_MM,
+    MALLOW_Z_STACK_16_MM,
 )
 
 def snap_to_venue_tier_mm(height_mm: float) -> float:

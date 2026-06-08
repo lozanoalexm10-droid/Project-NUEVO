@@ -650,9 +650,11 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             # since some robot parts (e.g., the arm) may cause obstacles to be detected, we can filter out those obstacles behind the lidar.
             obstacles_r = obstacles_r[np.abs(np.arctan2(obstacles_r[:,1],obstacles_r[:,0])) <= self.view_angle,:] # only consider obstacles in front of the robot within 180 deg FOV, which can help prevent the robot from being too conservative by reacting to obstacles behind it that are not in its path.
 
-            # consider the lidar offset from the robot center
-            # lidar_offset_mm = 100.0
-            # obstacles_r = obstacles_r + np.array([[lidar_offset_mm, 0],])
+            # Lidar sits 100 mm forward of robot center — shift readings so the
+            # planner reasons about cone positions in the robot-center frame
+            # (matches the visualizer in legacy._draw_lidar_obstacles).
+            lidar_offset_mm = 100.0
+            obstacles_r = obstacles_r + np.array([[lidar_offset_mm, 0],])
 
             # Filter out obstacles outside of detecting range.
             dists = np.linalg.norm(obstacles_r, axis=1)
@@ -719,8 +721,11 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                     smooth_y = y + abs(dx) * 2.5
                     smooth_y = min(smooth_y, closest_pt[1] - abs(dx) * 0.5)
                     smooth_y = max(smooth_y, y + 20.0)
-                    # Hold: stay offset until safe_dist past the obstacle
-                    clear_y  = max(smooth_y, closest_pt[1]) + self.safe_dist
+                    # Hold: stay offset until safely past the obstacle.
+                    # Need safe_dist (clearance from cone center) plus raw_LD
+                    # (so pure pursuit doesn't begin targeting the return
+                    # waypoint while the robot is still abreast of the cone).
+                    clear_y  = max(smooth_y, closest_pt[1]) + self.safe_dist + self.raw_LD
                     # Exit: symmetric return to center, capped so return_y never
                     # exceeds the final goal's y (prevents overshoot past goal).
                     goal_y   = self.raw_path[-1][1]

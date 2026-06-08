@@ -61,9 +61,12 @@ class LegacyMixin:
         )
 
     def _nav_follow_pp_path_loop(self):
+        # Use fused pose (GPS/AprilTag-corrected) when available, else raw odom.
+        # Raw odom drift across SEG1+SEG2+corner was making x_L diverge from
+        # the true centerline, flipping cone left/right decisions.
+        pose = self._get_pose_mm()
         with self._lock:
             obstacles = self._obstacles_mm.copy()
-            pose = self._pose
 
         if self._obstacle_avoidance_planner is None:
             raise RuntimeError(
