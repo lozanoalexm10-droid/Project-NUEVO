@@ -57,6 +57,8 @@ from robot.hardware_map import Button, DEFAULT_FSM_HZ, LED, Limit, StepMoveType
 from robot.robot import FirmwareState, Robot
 from robot.tests.scripts._manipulator_config import (
     ARM_GEOMETRY,
+    ARM_RANGING_ELBOW_DEG,
+    ARM_RANGING_SHOULDER_DEG,
     ARM_SERVO_STEP_DEG,
     ARM_SERVO_STEP_DWELL,
     CAMPAN_ACCELERATION,
@@ -109,11 +111,14 @@ SAFE_SHOULDER_DEG = 140.0
 SAFE_ELBOW_DEG    = 90.0
 
 # Ranging point-down pose — used in RANGING so the forearm (and the ultrasonic
-# mounted on it) tilts down toward the cup. With the cup centered in the
+# mounted on it) tilts down toward the cup.  With the cup centered in the
 # camera frame, its bbox width plus the known CUP_DIAMETER_MM gives the
 # horizontal distance the marshmallow sits at.
-RANGING_SHOULDER_DEG = 135.0
-RANGING_ELBOW_DEG    = 30.0
+# Sourced from _manipulator_config.py: shoulder 130 sits in the "any-elbow-
+# safe" zone (shoulder ≥ 120°) so the pose clears the chassis at any
+# turntable angle.  Elbow 0 angles the forearm ~56° below horizontal.
+RANGING_SHOULDER_DEG = ARM_RANGING_SHOULDER_DEG
+RANGING_ELBOW_DEG    = ARM_RANGING_ELBOW_DEG
 
 # Campan limit used when panning to centre a chosen target during RANGING.
 # Targets beyond this in world bearing can't be centred in the camera; the
@@ -560,72 +565,82 @@ def run(robot: Robot) -> None:  # noqa: C901
             _campan_to_deg(robot, camera_pan_deg)
             time.sleep(RANGING_CUP_SETTLE_S)
 
-            # Camera-model fallback in case neither cup detection nor US gives a
-            # usable refinement below.
+            # Default to the SCANNING estimate so a total refinement failure
+            # still leaves usable mallow coordinates downstream.
             bearing_rad = math.radians(arm_turntable_deg)
             mallow_x = ARM_GEOMETRY.camera_forward_offset_mm + mallow_dist_est * math.cos(bearing_rad)
             mallow_y = mallow_dist_est * math.sin(bearing_rad)
             mallow_z = mallow_height_est
 
-            # Preferred refinement: cup detection. The marshmallow is always
-            # centred on the cup, so converting the cup bbox + known
-            # CUP_DIAMETER_MM into a distance also gives the marshmallow's
-            # horizontal position. z is the tier height already snapped during
-            # SCANNING.
-            img_w, img_h = robot.get_detection_image_size()
-            best_cup = None
-            best_cup_conf = MIN_CONFIDENCE_CUP
-            for cup in robot.get_detections(CUP_CLASS):
-                cc = float(cup["confidence"])
-                if cc < best_cup_conf:
-                    continue
-                cup_world_bearing = camera_pan_deg + _detection_bearing_deg(cup, img_w)
-                if abs(cup_world_bearing - arm_turntable_deg) > MALLOW_CUP_BEARING_MATCH_DEG:
-                    continue
-                best_cup = cup
-                best_cup_conf = cc
-
             refined = False
-            if best_cup is not None:
-                cup_dist     = _cup_dist_mm(best_cup, img_w)
-                cup_bearing  = camera_pan_deg + _detection_bearing_deg(best_cup, img_w)
-                refined_rad  = math.radians(cup_bearing)
-                mallow_x = ARM_GEOMETRY.camera_forward_offset_mm + cup_dist * math.cos(refined_rad)
-                mallow_y = cup_dist * math.sin(refined_rad)
-                refined = True
-                snap = _save_scan_snapshot(
-                    datetime.now().strftime("%Y%m%d_%H%M%S"), "ranging_cup")
-                snap_msg = f"  snapshot={snap}" if snap else ""
-                print(f"[TEST] RANGING — cup refine: dist={cup_dist:.0f} mm  "
-                      f"bearing={cup_bearing:.1f}°  conf={best_cup_conf:.2f}{snap_msg}")
 
-            # Ultrasonic fallback — only if no cup was matched. Keeps the old
-            # behaviour available so a missing detection isn't a hard failure.
+            # Preferred refinement: ultrasonic with cup-radius back-projection.
+            # d_raw is the 3-D distance from the US sensor to the cup's NEAR
+            # wall.  The marshmallow sits on the cup's centre axis, so we
+            # project the beam past the near wall by one cup radius along the
+            # horizontal forearm direction.  Geometrically that's:
+            #   horiz(beam to wall)  = d_raw * cos(forearm_rad)
+            #   horiz(beam to centre) = horiz(beam to wall) + CUP_DIAMETER_MM/2
+            # Combined with sensor_horiz (US horizontal reach from turntable),
+            # mallow_reach gives the radial distance to the cup CENTRE.
+            try:
+                d_raw = robot.get_ultrasonic_mm()
+                if d_raw is not None and 20.0 < d_raw < 800.0:
+                    sh_geo      = ARM_GEOMETRY.shoulder_servo_to_geo(shoulder_pos)
+                    el_geo      = ARM_GEOMETRY.elbow_servo_to_geo(elbow_pos)
+                    sh_rad      = math.radians(sh_geo)
+                    el_rad      = math.radians(el_geo)
+                    forearm_rad = sh_rad + (math.pi - el_rad)
+                    sensor_horiz = (ARM_GEOMETRY.shoulder_offset_mm
+                                    + ARM_GEOMETRY.L1 * math.cos(sh_rad)
+                                    + ULTRASONIC_FOREARM_OFFSET_MM * math.cos(forearm_rad))
+                    mallow_reach = (sensor_horiz
+                                    + d_raw * math.cos(forearm_rad)
+                                    + CUP_DIAMETER_MM / 2.0)
+                    mallow_x = mallow_reach * math.cos(bearing_rad)
+                    mallow_y = mallow_reach * math.sin(bearing_rad)
+                    refined = True
+                    print(f"[TEST] RANGING — US refine: US={d_raw:.0f} mm  "
+                          f"reach={mallow_reach:.0f} mm  "
+                          f"(+{CUP_DIAMETER_MM/2.0:.0f} mm cup-radius correction)")
+                else:
+                    print(f"[TEST] RANGING — US {'None' if d_raw is None else f'{d_raw:.0f} mm'} "
+                          f"out of range at {arm_turntable_deg:.1f}° — trying camera.")
+            except Exception as exc:
+                print(f"[TEST] RANGING — US error ({exc}) — trying camera.")
+
+            # Fallback: cup detection (camera pinhole formula gives cup centre).
+            # Only consulted if US failed; if both fail, we keep the SCANNING
+            # estimate so picking can still proceed.
             if not refined:
-                try:
-                    d_raw = robot.get_ultrasonic_mm()
-                    if d_raw is not None and 20.0 < d_raw < 800.0:
-                        sh_geo      = ARM_GEOMETRY.shoulder_servo_to_geo(shoulder_pos)
-                        el_geo      = ARM_GEOMETRY.elbow_servo_to_geo(elbow_pos)
-                        sh_rad      = math.radians(sh_geo)
-                        el_rad      = math.radians(el_geo)
-                        forearm_rad = sh_rad + (math.pi - el_rad)
-                        sensor_horiz = (ARM_GEOMETRY.shoulder_offset_mm
-                                        + ARM_GEOMETRY.L1 * math.cos(sh_rad)
-                                        + ULTRASONIC_FOREARM_OFFSET_MM * math.cos(forearm_rad))
-                        mallow_reach = sensor_horiz + d_raw * math.cos(forearm_rad)
-                        mallow_x = mallow_reach * math.cos(bearing_rad)
-                        mallow_y = mallow_reach * math.sin(bearing_rad)
-                        print(f"[TEST] RANGING — US fallback: US={d_raw:.0f} mm  "
-                              f"reach={mallow_reach:.0f} mm  (no cup matched at "
-                              f"{arm_turntable_deg:.1f}°)")
-                    else:
-                        print(f"[TEST] RANGING — no cup at {arm_turntable_deg:.1f}° and "
-                              f"US {'None' if d_raw is None else f'{d_raw:.0f} mm'} "
-                              f"out of range — using SCANNING estimate.")
-                except Exception as exc:
-                    print(f"[TEST] RANGING — no cup matched and US error ({exc}) — "
-                          f"using SCANNING estimate.")
+                img_w, img_h = robot.get_detection_image_size()
+                best_cup = None
+                best_cup_conf = MIN_CONFIDENCE_CUP
+                for cup in robot.get_detections(CUP_CLASS):
+                    cc = float(cup["confidence"])
+                    if cc < best_cup_conf:
+                        continue
+                    cup_world_bearing = camera_pan_deg + _detection_bearing_deg(cup, img_w)
+                    if abs(cup_world_bearing - arm_turntable_deg) > MALLOW_CUP_BEARING_MATCH_DEG:
+                        continue
+                    best_cup = cup
+                    best_cup_conf = cc
+
+                if best_cup is not None:
+                    cup_dist     = _cup_dist_mm(best_cup, img_w)
+                    cup_bearing  = camera_pan_deg + _detection_bearing_deg(best_cup, img_w)
+                    refined_rad  = math.radians(cup_bearing)
+                    mallow_x = ARM_GEOMETRY.camera_forward_offset_mm + cup_dist * math.cos(refined_rad)
+                    mallow_y = cup_dist * math.sin(refined_rad)
+                    refined = True
+                    snap = _save_scan_snapshot(
+                        datetime.now().strftime("%Y%m%d_%H%M%S"), "ranging_cup")
+                    snap_msg = f"  snapshot={snap}" if snap else ""
+                    print(f"[TEST] RANGING — camera fallback refine: dist={cup_dist:.0f} mm  "
+                          f"bearing={cup_bearing:.1f}°  conf={best_cup_conf:.2f}{snap_msg}")
+                else:
+                    print(f"[TEST] RANGING — no camera cup match at "
+                          f"{arm_turntable_deg:.1f}° — using SCANNING estimate.")
 
             print(f"[TEST] RANGING — IK target: x={mallow_x:.0f} y={mallow_y:.0f} z={mallow_z:.0f} mm")
 

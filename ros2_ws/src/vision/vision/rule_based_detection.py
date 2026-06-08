@@ -85,11 +85,12 @@ def yellow_detection_score(contour_area: float, min_area_px: int, fill_ratio: fl
 def detect_marshmallow(
     frame_bgr: np.ndarray,
 ) -> tuple[list[DetectedObject], list[DebugOverlay]]:
-    """Detect a white/off-white marshmallow using HSV color + shape filtering.
+    """Detect a white marshmallow using HSV color + shape filtering.
 
-    Marshmallows are low-saturation (white/cream), high-brightness, roughly
-    compact blobs. The aspect-ratio filter rejects thin strips (walls, paper
-    edges) that also match the white HSV range.
+    Marshmallows read as white/off-white: very low saturation, high value.
+    Best used against a dark (e.g. blackboard) background so the white blob
+    stands out cleanly.  The aspect-ratio filter rejects thin strips (paper
+    edges, signage) and the area cap rejects large bright backgrounds.
     """
     detections: list[DetectedObject] = []
     debug_overlays: list[DebugOverlay] = []
@@ -97,10 +98,9 @@ def detect_marshmallow(
     blurred = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
 
-    # White/off-white: any hue, low saturation, high brightness.
-    # OpenCV HSV: H 0-180, S 0-255, V 0-255.
-    white_low  = np.array([ 0,   0, 160], dtype=np.uint8)
-    white_high = np.array([180,  80, 255], dtype=np.uint8)
+    # White: any hue, low saturation, high value. OpenCV HSV: H 0-180, S 0-255, V 0-255.
+    white_low  = np.array([0,   0, 170], dtype=np.uint8)
+    white_high = np.array([180, 60, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, white_low, white_high)
 
     # Open removes isolated noise; close fills small gaps inside the blob.
@@ -108,6 +108,16 @@ def detect_marshmallow(
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  open_kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+
+    # Pink / magenta mask — used to REJECT the pink tennis ball, whose blown-out
+    # highlight can read as "white". A real marshmallow has ~no pink around it,
+    # whereas a white highlight on the pink ball is ringed by pink.
+    # IMPORTANT: hue is capped at 168 to EXCLUDE the red-wrap (red reads as hue
+    # ~170-179 in OpenCV), otherwise a red cup beneath the marshmallow would be
+    # mistaken for pink and reject a perfectly good marshmallow.
+    pink_low  = np.array([145, 60,  80], dtype=np.uint8)
+    pink_high = np.array([168, 255, 255], dtype=np.uint8)
+    pink_mask = cv2.inRange(hsv, pink_low, pink_high)
 
     # Minimum blob size: allows marshmallow to be small when far away (~12 in).
     # Maximum blob size: rejects large background regions (walls, ceiling, floor).
@@ -135,6 +145,17 @@ def detect_marshmallow(
         if aspect > max_aspect:
             continue
 
+        # Reject if the blob is ringed by pink — that's the pink tennis ball, not
+        # a marshmallow. Check pink fraction in a region ~35 % larger than the bbox.
+        ex, ey = int(width * 0.35), int(height * 0.35)
+        rx0, ry0 = max(0, x - ex), max(0, y - ey)
+        rx1, ry1 = min(frame_w, x + width + ex), min(frame_h, y + height + ey)
+        region = pink_mask[ry0:ry1, rx0:rx1]
+        region_area = max(1, region.shape[0] * region.shape[1])
+        pink_frac = float(cv2.countNonZero(region)) / region_area
+        if pink_frac > 0.15:
+            continue
+
         confidence = _marshmallow_score(contour_area, min_area_px, fill_ratio, aspect)
         detection  = DetectedObject(
             class_name="marshmallow",
@@ -148,7 +169,7 @@ def detect_marshmallow(
         detections.append(detection)
         debug_overlays.append(
             DebugOverlay(
-                color=(200, 200, 200),
+                color=(255, 255, 255),
                 contour=contour,
                 label=f"marshmallow {confidence:.2f}",
                 x=int(x),
@@ -253,17 +274,25 @@ def filter_marshmallows_on_red_cups(
     marshmallow_overlays: list[DebugOverlay],
     red_cup_detections: list[DetectedObject],
 ) -> tuple[list[DetectedObject], list[DebugOverlay]]:
-    """Keep only marshmallows positioned on top of a red cup.
+    """Keep only marshmallows positioned on top of a red cup — when a cup is
+    actually visible.
 
     A marshmallow qualifies when its horizontal center sits inside some cup's
     horizontal extent and its vertical center is at or above the cup's upper
     third — the slack lets a marshmallow rest in the cup rim instead of
-    needing to float perfectly above the top edge. Drops background whites
-    (ceiling, paper, walls) that pass the color/shape filter but are not on
-    a cup.
+    needing to float perfectly above the top edge.  When the cup is visible
+    this drops background false-positives (originally important for the white
+    detector; less important now that mallows are purple).
+
+    If no cup is detected we pass the marshmallow detections through
+    unfiltered, because on short stacks (~7 cups) the cup falls below the
+    bottom of the camera frame and cup-gating would otherwise drop a
+    perfectly good mallow.
     """
-    if not red_cup_detections or not marshmallow_detections:
+    if not marshmallow_detections:
         return [], []
+    if not red_cup_detections:
+        return list(marshmallow_detections), list(marshmallow_overlays)
 
     kept_detections: list[DetectedObject] = []
     kept_overlays: list[DebugOverlay] = []

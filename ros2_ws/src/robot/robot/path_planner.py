@@ -578,6 +578,12 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         self.avoidance_counter = 0
         self.avoidance_delay = avoidance_delay
 
+        # Spatial re-trigger guard: after avoiding cone at world-y = C, don't
+        # allow a new trigger until the robot's y >= C.  This prevents the
+        # previous cone from cascading a fresh avoidance cycle the moment the
+        # timer expires (while the robot is still beside it).
+        self._avoid_cleared_y: float = -1e9
+
         self.current_lane = 'Center'
 
     def set_path(self, path: list[tuple[float, float]]):
@@ -594,6 +600,7 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             for i in range(len(self.raw_path)):
                 x_, y_ = self.raw_path[i]
                 self.remaining_path.append((x_+self.offset, y_))
+        self._avoid_cleared_y = -1e9
 
     def _advance_remaining_path(self,
         x: float,
@@ -660,20 +667,31 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             obstacles = obstacles[np.abs(obstacles[:,0]-self.x_L)<self.lane_width,:]
 
             # Modify path waypoints that are too close to the obstacles to prevent the robot from trying to track those waypoints and colliding with the obstacles.
-            if np.any(np.sqrt(np.sum((np.float64([self.remaining_path[0]])-obstacles)**2, 1)) < self.safe_dist):
+            # Guard: need at least 2 waypoints or the midpoint merge crashes on remaining_path[1].
+            if len(self.remaining_path) >= 2 and \
+                    np.any(np.sqrt(np.sum((np.float64([self.remaining_path[0]])-obstacles)**2, 1)) < self.safe_dist):
                 self.remaining_path[0] = ((self.remaining_path[0][0]+self.remaining_path[1][0])/2, (self.remaining_path[0][1]+self.remaining_path[1][1])/2)
                 self.raw_path[0] = ((self.raw_path[0][0]+self.raw_path[1][0])/2, (self.raw_path[0][1]+self.raw_path[1][1])/2)
 
-            if (len(obstacles_r) > 0)  and (self.avoidance_counter <= 0):
+            # Spatial re-trigger guard: also require that the robot has advanced
+            # past the previously avoided cone's y-position before new triggers fire.
+            spatial_clear = (y >= self._avoid_cleared_y)
+            if (len(obstacles_r) > 0) and (self.avoidance_counter <= 0) and spatial_clear:
                 # Step 3: Find the cloest obstacle, and decide which lane to switch.
                 dists = np.linalg.norm(obstacles_r, axis=1)
                 # min_dist = np.min(dists)
                 arg_dist = np.argmin(dists)
                 closest_pt = obstacles[arg_dist,:] # closest obstacle point in world frame
 
-                # Minimum lateral shift to achieve safe_dist clearance from current robot x.
-                lateral_gap = abs(closest_pt[0] - x)
-                needed_offset = max(self.safe_dist - lateral_gap, 0.0)
+                # Compute required lateral shift so the detour path clears the cone
+                # by exactly safe_dist, regardless of which side the robot is on.
+                # Target clearance point is always on the far side of the cone from center.
+                if closest_pt[0] < self.x_L:
+                    # Cone is left of centre → detour right, past cone_x + safe_dist
+                    needed_offset = max((closest_pt[0] + self.safe_dist) - x, 0.0)
+                else:
+                    # Cone is right of centre → detour left, past cone_x - safe_dist
+                    needed_offset = max(x - (closest_pt[0] - self.safe_dist), 0.0)
 
                 change_lane = False
                 if needed_offset > 10.0 and (
@@ -687,6 +705,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                     # keep avoidance active for a few cycles to ensure the robot reacts to the obstacle.
                     self.avoidance_counter = self.avoidance_delay
                     self.avoidance_active = True
+                    # Spatial guard: don't allow new triggers until robot passes this cone's y.
+                    self._avoid_cleared_y = closest_pt[1]
 
                 # Generate a hat-shaped detour: entry → hold past obstacle → return to center.
                 if change_lane:
@@ -701,8 +721,10 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                     smooth_y = max(smooth_y, y + 20.0)
                     # Hold: stay offset until safe_dist past the obstacle
                     clear_y  = max(smooth_y, closest_pt[1]) + self.safe_dist
-                    # Exit: symmetric return to center
-                    return_y = clear_y + abs(dx) * 2.5
+                    # Exit: symmetric return to center, capped so return_y never
+                    # exceeds the final goal's y (prevents overshoot past goal).
+                    goal_y   = self.raw_path[-1][1]
+                    return_y = min(clear_y + abs(dx) * 2.5, goal_y)
 
                     # Center-lane waypoints beyond the return point (no lateral shift)
                     beyond = [(x_, y_) for x_, y_ in self.raw_path if y_ > return_y] \

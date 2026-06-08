@@ -46,6 +46,8 @@ class QwiicUltrasonicNode(Node):
 
         self._pub = self.create_publisher(Range, "/ultrasonic_range", _BEST_EFFORT)
         self._bus = None
+        self._last_err_log = 0.0
+        self._consec_errors = 0
         self._open_bus()
 
         self.create_timer(1.0 / self._rate_hz, self._tick)
@@ -54,7 +56,20 @@ class QwiicUltrasonicNode(Node):
             f"(I2C bus {self._bus_num}, addr 0x{self._addr:02X}, {self._rate_hz:.0f} Hz)"
         )
 
+    def _close_bus(self) -> None:
+        """Close the bus handle if open, swallowing any error during close."""
+        if self._bus is not None:
+            try:
+                self._bus.close()
+            except Exception:
+                pass
+            self._bus = None
+
     def _open_bus(self) -> None:
+        # Always close any existing handle first — overwriting self._bus without
+        # closing leaks the underlying file descriptor and quickly trips
+        # [Errno 24] Too many open files.
+        self._close_bus()
         try:
             import smbus2
             self._bus = smbus2.SMBus(self._bus_num)
@@ -67,20 +82,24 @@ class QwiicUltrasonicNode(Node):
 
     def _read_distance_mm(self) -> int | None:
         """Trigger a measurement and return distance in mm, or None on error."""
-        try:
-            import smbus2
+        if self._bus is None:
+            self._open_bus()
             if self._bus is None:
-                self._open_bus()
-                if self._bus is None:
-                    return None
-            # Write any byte to trigger the measurement, then wait for the echo
+                return None
+        try:
             self._bus.write_byte(self._addr, 0x01)
             time.sleep(0.08)
             data = self._bus.read_i2c_block_data(self._addr, 0x01, 2)
+            self._consec_errors = 0
             return (data[0] << 8) | data[1]
-        except Exception as exc:
-            self.get_logger().warn(f"I2C read error: {exc}")
-            self._bus = None
+        except OSError as exc:
+            self._consec_errors += 1
+            now = time.monotonic()
+            if now - self._last_err_log > 2.0:
+                self.get_logger().warn(
+                    f"I2C read error ({self._consec_errors} consec): {exc}"
+                )
+                self._last_err_log = now
             return None
 
     def _tick(self) -> None:
@@ -111,6 +130,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        node._close_bus()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
