@@ -71,6 +71,8 @@ State machine
 from __future__ import annotations
 
 import math
+import os
+import shutil
 import time
 
 from robot.arm_kinematics import OutOfReachError, forward_kinematics, inverse_kinematics
@@ -149,6 +151,17 @@ PLACE_Z_MM:          float = CONFIG_PLACE_Z_MM
 # 0% = GRIPPER_OPEN_DEG (29°), 100% = GRIPPER_CLOSE_DEG (90°, hard stop).
 SQUEEZE_PERCENT: float = 90.0
 SQUEEZE_DEG:     float = GRIPPER_OPEN_DEG + (SQUEEZE_PERCENT / 100.0) * (GRIPPER_CLOSE_DEG - GRIPPER_OPEN_DEG)
+
+# Duration of each gripper hold phase (settle / hold squeeze / dwell at place).
+PHASE_HOLD_S: float = 3.0
+
+# ── Cosmetic camera scan ──────────────────────────────────────────────────────
+# Pan the camera across the cups for show before the (hardcoded) pick. The scan
+# only logs/saves what it sees — the pick ALWAYS targets the hardcoded mallow
+# position above, regardless of detection.
+SCAN_PAN_ANGLES   = [-60.0, -30.0, 0.0, 30.0, 60.0]  # campan sweep (deg)
+SCAN_SETTLE_S     = 0.6      # settle after each pan before snapshot
+VISION_OUT_DIR    = "/runtime_output/vision"
 
 # ── Safe carry pose ───────────────────────────────────────────────────────────
 SAFE_SHOULDER_DEG = 110.0   # upper arm angled slightly up (geo ≈ +14°)
@@ -444,6 +457,40 @@ def run(robot: Robot) -> None:  # noqa: C901
             _turntable_to_deg(robot, 0.0, turntable_home_offset)
             time.sleep(0.5)
 
+            state = "VISION_SCAN"
+            state_entry = time.monotonic()
+
+        # ── VISION_SCAN (cosmetic) ────────────────────────────────────────────
+        # Pan the camera across the cups for show + log/save what it sees. The
+        # pick still targets the hardcoded marshmallow position regardless.
+        elif state == "VISION_SCAN":
+            if robot.get_button(Button.BTN_2):
+                robot.stop(); robot.shutdown(); return
+            print("[TEST] VISION_SCAN — panning camera across cups (cosmetic; "
+                  "pick uses the hardcoded position).")
+            try:
+                robot.enable_vision()
+            except Exception as exc:
+                print(f"[TEST] VISION_SCAN — enable_vision failed (continuing): {exc}")
+            for ang in SCAN_PAN_ANGLES:
+                _campan_to_deg(robot, ang)
+                time.sleep(SCAN_SETTLE_S)
+                n_mallow = n_cup = 0
+                try:
+                    n_mallow = len(robot.get_detections("marshmallow"))
+                    n_cup    = len(robot.get_detections("red_cup"))
+                except Exception:
+                    pass
+                try:
+                    dst = os.path.join(VISION_OUT_DIR, f"manual_scan_pan{ang:+04.0f}.jpg")
+                    shutil.copyfile(os.path.join(VISION_OUT_DIR, "latest.jpg"), dst)
+                except Exception:
+                    dst = "—"
+                print(f"[TEST] VISION_SCAN — pan={ang:+.0f}°  marshmallow={n_mallow}  "
+                      f"red_cup={n_cup}  img={dst}")
+            _campan_to_deg(robot, 0.0)
+            time.sleep(0.3)
+            print("[TEST] VISION_SCAN — done; proceeding to hardcoded pick.")
             state = "IK_COMPUTE"
             state_entry = time.monotonic()
 
@@ -537,7 +584,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             print(f"[TEST] APPROACHING — FK − target offset:   "
                   f"dx={fk_x - pick_x:+.0f}  dy={fk_y - pick_y:+.0f}  dz={fk_z - pick_z:+.0f} mm")
             # Pause with the claw open around the marshmallow before squeezing.
-            _hold_grip(robot, GRIPPER_OPEN_DEG, 5.0, "settle (claw around marshmallow)")
+            _hold_grip(robot, GRIPPER_OPEN_DEG, PHASE_HOLD_S, "settle (claw around marshmallow)")
             print("[TEST] APPROACHING — at pick position, grabbing.")
             state = "PICKING"
             state_entry = time.monotonic()
@@ -553,7 +600,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, SQUEEZE_DEG)
             time.sleep(0.4)
             # Hold the squeeze for 5 s.
-            _hold_grip(robot, SQUEEZE_DEG, 5.0, "hold squeeze")
+            _hold_grip(robot, SQUEEZE_DEG, PHASE_HOLD_S, "hold squeeze")
             print("[TEST] PICKING — gripped.")
             state = "CARRY_TO_PLACE"
             state_entry = time.monotonic()
@@ -609,7 +656,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             )
             time.sleep(0.4)
             # Leave the marshmallow in place (still gripped) for 5 s before dropping.
-            _hold_grip(robot, SQUEEZE_DEG, 5.0, "dwell at place location")
+            _hold_grip(robot, SQUEEZE_DEG, PHASE_HOLD_S, "dwell at place location")
             gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_OPEN_DEG)
             time.sleep(0.3)
             print("[TEST] PLACING — released.  PASS")

@@ -34,6 +34,8 @@ Nodes required: bridge (auto) + vision + robot.  No lidar node needed.
 from __future__ import annotations
 
 import math
+import os
+import shutil
 import time
 
 from robot.arm_kinematics import OutOfReachError, forward_kinematics, inverse_kinematics
@@ -120,10 +122,19 @@ KNOWN_MALLOW_Z_MM_SORTED: list[float] = sorted([
 # sags under load and grabs low.  manual_ik_pick_place_test uses ~+11 mm.
 PICK_Z_LIFT_MM: float = 12.0
 
+# Where the vision node writes its annotated frame, and where we copy per-angle
+# scan snapshots for diagnosis.
+VISION_OUT_DIR: str = "/runtime_output/vision"
+# Set env PICK_SCAN_ONLY=1 to pan + save the 4 scan images and exit WITHOUT
+# picking — used to diagnose which cups are detected and at what heights.
+SCAN_ONLY: bool = bool(os.environ.get("PICK_SCAN_ONLY"))
+
 # ── Vision scan tunables ──────────────────────────────────────────────────────
 PICK_CAMPAN_SETTLE_S = CAMPAN_SETTLE_S + 0.3   # settle after panning before reading
 PICK_CAMPAN_MAX_DEG  = 66.0                    # campan physical pan limit
 VISION_WARMUP_TIMEOUT_S = 5.0                  # wait for first inference before scanning
+SCAN_SAMPLES   = 6     # detection reads per cup (defeats the stale-cache first read)
+SCAN_SAMPLE_DT = 0.2   # seconds between samples (~1.2 s total at the slow ~4 Hz node)
 
 # ── Place target (same defaults as manual_ik_pick_place_test.py) ──────────────
 PLACE_TURNTABLE_DEG: float = -80.0
@@ -140,10 +151,13 @@ HOME_TIMEOUT_S = 30.0
 HOME_BACKOFF   = 200
 TURNTABLE_HOME_OFFSET_MEASURED_DEG = TURNTABLE_HOME_OFFSET_DEG
 
-# Distance from the camera lens to the campan stepper axis (mm). The campan
-# pivot sits this much closer to the robot than the lens.
-CAMPAN_OFFSET_FROM_CAMERA_MM = 38.7
-CAMPAN_FORWARD_OFFSET_MM     = CAMERA_FORWARD_OFFSET_MM - CAMPAN_OFFSET_FROM_CAMERA_MM
+# Camera-rig geometry (measured): the campan stepper axis sits 178.5 mm in front
+# of the turntable axis, and the focal lens is another 30 mm in front of the
+# campan axis (so the lens is 208.5 mm forward). The CAMERA pans about the
+# CAMPAN axis, so the per-stack pointing angle must be measured from the campan
+# axis — using the lens offset here would bias every aim angle.
+CAMPAN_OFFSET_FROM_CAMERA_MM = 30.0     # lens is 30 mm ahead of the campan pivot
+CAMPAN_FORWARD_OFFSET_MM     = CAMERA_FORWARD_OFFSET_MM - CAMPAN_OFFSET_FROM_CAMERA_MM  # ≈ 178.5 mm
 
 
 # ── Servo / motion helpers (mirror manual_ik_pick_place_test.py exactly) ──────
@@ -319,35 +333,50 @@ def _scan_cups(robot: Robot, cups: list[dict[str, float]]) -> list[dict[str, flo
         _campan_to_deg(robot, clamped)
         time.sleep(PICK_CAMPAN_SETTLE_S)
 
+        # Save the annotated camera frame at this pan angle for diagnosis.
+        try:
+            time.sleep(0.3)  # let one more annotated frame land after settle
+            dst = os.path.join(VISION_OUT_DIR, f"scan_cup{int(cup['id'])}_pan{clamped:+04.0f}.jpg")
+            shutil.copyfile(os.path.join(VISION_OUT_DIR, "latest.jpg"), dst)
+            cup["scan_img"] = dst
+            print(f"[VISION]   saved scan image -> {dst}")
+        except Exception as exc:
+            print(f"[VISION]   (could not save scan image: {exc})")
+
         dist_mm = math.hypot(cup["x_mm"] - CAMERA_FORWARD_OFFSET_MM, cup["y_mm"])
 
-        # --- cup top height (for ranking) ---
-        cup["top_mm"] = None
-        best_cup = None
-        for det in robot.get_detections(CUP_CLASS):
-            if float(det["confidence"]) < MIN_CONFIDENCE_CUP:
-                continue
-            b = _detection_center_bearing_deg(det, img_w)
-            if abs(b - expected_in_frame) > MALLOW_CUP_BEARING_MATCH_DEG:
-                continue
-            if best_cup is None or float(det["confidence"]) > float(best_cup["confidence"]):
-                best_cup = det
-        if best_cup is not None:
-            cup["top_mm"] = _cup_top_height_mm(best_cup, img_w, img_h, dist_mm)
-
-        # --- marshmallow presence ---
+        # Multi-sample over a short window: one get_detections() right after a pan
+        # frequently returns the previous angle's stale (or empty) cache before a
+        # fresh inference lands, which is what dropped far/edge cups before. Read
+        # several times and keep the best per class.
+        cup["top_mm"]      = None
         cup["mallow_conf"] = 0.0
         cup["mallow_det"]  = None
-        for det in robot.get_detections(MARSHMALLOW_CLASS):
-            conf = float(det["confidence"])
-            if conf < MIN_CONFIDENCE_MARSHMALLOW:
-                continue
-            b = _detection_center_bearing_deg(det, img_w)
-            if abs(b - expected_in_frame) > MALLOW_CUP_BEARING_MATCH_DEG:
-                continue
-            if conf > cup["mallow_conf"]:
-                cup["mallow_conf"] = conf
-                cup["mallow_det"]  = det
+        best_cup_offset    = 1e9   # keep the cup detection nearest frame centre
+        for _sample in range(SCAN_SAMPLES):
+            # --- cup top height (for ranking): best-CENTERED cup, not best-conf ---
+            for det in robot.get_detections(CUP_CLASS):
+                if float(det["confidence"]) < MIN_CONFIDENCE_CUP:
+                    continue
+                b = _detection_center_bearing_deg(det, img_w)
+                off = abs(b - expected_in_frame)
+                if off > MALLOW_CUP_BEARING_MATCH_DEG:
+                    continue
+                if off < best_cup_offset:
+                    best_cup_offset = off
+                    cup["top_mm"] = _cup_top_height_mm(det, img_w, img_h, dist_mm)
+            # --- marshmallow presence: highest confidence among centered ---
+            for det in robot.get_detections(MARSHMALLOW_CLASS):
+                conf = float(det["confidence"])
+                if conf < MIN_CONFIDENCE_MARSHMALLOW:
+                    continue
+                b = _detection_center_bearing_deg(det, img_w)
+                if abs(b - expected_in_frame) > MALLOW_CUP_BEARING_MATCH_DEG:
+                    continue
+                if conf > cup["mallow_conf"]:
+                    cup["mallow_conf"] = conf
+                    cup["mallow_det"]  = det
+            time.sleep(SCAN_SAMPLE_DT)
 
         top_str = f"{cup['top_mm']:+.0f} mm" if cup["top_mm"] is not None else "—"
         print(f"[VISION] cup#{cup['id']:.0f} pan={clamped:+.1f}°  "
@@ -530,6 +559,19 @@ def run(robot: Robot) -> None:  # noqa: C901
                 print("[VISION] WARNING: incomplete height scan — could not rank all "
                       "cups; will snap the target's own height instead.")
 
+            # Per-cup scan summary (pan / detected top height / marshmallow conf).
+            print("[VISION] ── scan summary ──")
+            for c in cups:
+                top_str = f"{c['top_mm']:+.0f}mm" if c.get("top_mm") is not None else "no cup"
+                print(f"[VISION]   cup#{c['id']:.0f} pan={c['pan_deg']:+.1f}°  "
+                      f"top={top_str}  mallow_conf={c['mallow_conf']:.2f}  "
+                      f"img={c.get('scan_img', '—')}")
+
+            if SCAN_ONLY:
+                print("[VISION] SCAN_ONLY — 4 angle images saved to "
+                      f"{VISION_OUT_DIR}/scan_cup*.jpg. Exiting without pick.")
+                return
+
             target = max(cups, key=lambda c: c["mallow_conf"])
             if target["mallow_conf"] <= 0.0:
                 print("[VISION] No marshmallow detected on any cup — aborting.")
@@ -550,6 +592,13 @@ def run(robot: Robot) -> None:  # noqa: C901
                   f"x={pick_x:.0f} y={pick_y:.0f}  "
                   f"z={assigned_z:+.0f}{'+%.0f lift' % PICK_Z_LIFT_MM} = {pick_z:+.0f} mm  "
                   f"bearing={pick_bearing_deg:+.1f}°")
+            # Save the chosen cup's annotated frame as the "correct detection" image.
+            try:
+                if target.get("scan_img"):
+                    shutil.copyfile(target["scan_img"], os.path.join(VISION_OUT_DIR, "scan_chosen.jpg"))
+                    print(f"[VISION] chosen-detection image -> {VISION_OUT_DIR}/scan_chosen.jpg")
+            except Exception as exc:
+                print(f"[VISION] (could not save chosen image: {exc})")
             state = "IK_COMPUTE"
             state_entry = time.monotonic()
 

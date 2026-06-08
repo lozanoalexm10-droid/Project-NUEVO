@@ -109,6 +109,16 @@ def detect_marshmallow(
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  open_kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
+    # Pink / magenta mask — used to REJECT the pink tennis ball, whose blown-out
+    # highlight can read as "white". A real marshmallow has ~no pink around it,
+    # whereas a white highlight on the pink ball is ringed by pink.
+    # IMPORTANT: hue is capped at 168 to EXCLUDE the red-wrap (red reads as hue
+    # ~170-179 in OpenCV), otherwise a red cup beneath the marshmallow would be
+    # mistaken for pink and reject a perfectly good marshmallow.
+    pink_low  = np.array([145, 60,  80], dtype=np.uint8)
+    pink_high = np.array([168, 255, 255], dtype=np.uint8)
+    pink_mask = cv2.inRange(hsv, pink_low, pink_high)
+
     # Minimum blob size: allows marshmallow to be small when far away (~12 in).
     # Maximum blob size: rejects large background regions (walls, ceiling, floor).
     # A real marshmallow (38 mm dia) fills at most ~12 % of a 1280×720 frame even
@@ -133,6 +143,17 @@ def detect_marshmallow(
 
         aspect = max(width, height) / float(max(1, min(width, height)))
         if aspect > max_aspect:
+            continue
+
+        # Reject if the blob is ringed by pink — that's the pink tennis ball, not
+        # a marshmallow. Check pink fraction in a region ~35 % larger than the bbox.
+        ex, ey = int(width * 0.35), int(height * 0.35)
+        rx0, ry0 = max(0, x - ex), max(0, y - ey)
+        rx1, ry1 = min(frame_w, x + width + ex), min(frame_h, y + height + ey)
+        region = pink_mask[ry0:ry1, rx0:rx1]
+        region_area = max(1, region.shape[0] * region.shape[1])
+        pink_frac = float(cv2.countNonZero(region)) / region_area
+        if pink_frac > 0.15:
             continue
 
         confidence = _marshmallow_score(contour_area, min_area_px, fill_ratio, aspect)
