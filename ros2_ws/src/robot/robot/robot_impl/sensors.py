@@ -599,6 +599,19 @@ class SensorsMixin:
             for track in tracks
         ]
 
+    def get_lidar_obstacles_robot(self) -> list[tuple[float, float]]:
+        """Return the latest lidar scan as a list of (x_mm, y_mm) in robot body
+        frame (origin = wheel midpoint, +x forward, +y left).
+
+        Returns an empty list if no scan has arrived yet. The list is a fresh
+        copy — safe to iterate without holding the sensor lock.
+        """
+        with self._lock:
+            obstacles = self._obstacles_mm
+        if obstacles is None:
+            return []
+        return [(float(p[0]), float(p[1])) for p in obstacles]
+
     # =========================================================================
     # Vision
     # =========================================================================

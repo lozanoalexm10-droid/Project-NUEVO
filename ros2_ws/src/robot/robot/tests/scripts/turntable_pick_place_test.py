@@ -6,13 +6,22 @@ pick the marshmallow, carry it to the place bearing (-45°), and release.
 
 Safe-arm convention (applied BEFORE every turntable move)
 ---------------------------------------------------------
-1. Shoulder → SAFE_SHOULDER_DEG (150°) FIRST — lifts upper arm straight up,
-   clearing the chassis before the forearm can swing anywhere dangerous.
-2. Elbow    → SAFE_ELBOW_DEG   (90°)  — swings forearm to horizontal after
-   the shoulder is already up.
+1. Shoulder → SAFE_SHOULDER_DEG (140°) FIRST — lifts upper arm well above
+   horizontal, clearing the chassis before the forearm can swing anywhere
+   dangerous.
+2. Elbow    → SAFE_ELBOW_DEG   (90°)  — keeps forearm collinear with the
+   raised upper arm.
 
 This order is mandatory.  Reversing it (elbow first while shoulder is low)
 swings the forearm into the chassis.
+
+Ranging point-down pose
+-----------------------
+For US/cup ranging the arm drops to RANGING_SHOULDER_DEG (135°) / RANGING_ELBOW_DEG
+(30°) so the forearm tilts down toward the cup. With the cup centered in the
+campan camera, the cup's bbox + known CUP_DIAMETER_MM give a precise distance.
+Marshmallow centre is taken to be the cup centre; height comes from the cup
+tier already snapped during SCANNING.
 
 Homing sequence (mirrors turntable_home_test.py)
 ------------------------------------------------
@@ -38,13 +47,18 @@ Nodes required:  bridge (auto) + vision + robot
 from __future__ import annotations
 
 import math
+import shutil
 import time
+from datetime import datetime
+from pathlib import Path
 
 from robot.arm_kinematics import OutOfReachError, inverse_kinematics
 from robot.hardware_map import Button, DEFAULT_FSM_HZ, LED, Limit, StepMoveType
 from robot.robot import FirmwareState, Robot
 from robot.tests.scripts._manipulator_config import (
     ARM_GEOMETRY,
+    ARM_RANGING_ELBOW_DEG,
+    ARM_RANGING_SHOULDER_DEG,
     ARM_SERVO_STEP_DEG,
     ARM_SERVO_STEP_DWELL,
     CAMPAN_ACCELERATION,
@@ -93,8 +107,28 @@ from robot.tests.scripts._manipulator_config import (
 
 # Safe carry angles — used before EVERY turntable rotation.
 # Shoulder moves FIRST to lift the arm, THEN elbow swings clear.
-SAFE_SHOULDER_DEG = 170.0
+SAFE_SHOULDER_DEG = 140.0
 SAFE_ELBOW_DEG    = 90.0
+
+# Ranging point-down pose — used in RANGING so the forearm (and the ultrasonic
+# mounted on it) tilts down toward the cup.  With the cup centered in the
+# camera frame, its bbox width plus the known CUP_DIAMETER_MM gives the
+# horizontal distance the marshmallow sits at.
+# Sourced from _manipulator_config.py: shoulder 130 sits in the "any-elbow-
+# safe" zone (shoulder ≥ 120°) so the pose clears the chassis at any
+# turntable angle.  Elbow 0 angles the forearm ~56° below horizontal.
+RANGING_SHOULDER_DEG = ARM_RANGING_SHOULDER_DEG
+RANGING_ELBOW_DEG    = ARM_RANGING_ELBOW_DEG
+
+# Campan limit used when panning to centre a chosen target during RANGING.
+# Targets beyond this in world bearing can't be centred in the camera; the
+# clamp keeps the move legal and the existing cup detection still has a chance
+# if the target falls inside the frame after clamping.
+RANGING_CAMPAN_MAX_DEG = 66.0
+
+# Settle dwell after the campan pans before sampling the cup detection.
+# Slightly longer than CAMPAN_SETTLE_S so the detection stream catches up.
+RANGING_CUP_SETTLE_S = CAMPAN_SETTLE_S + 0.3
 
 # Full-arc campan sweep across the entire ±90° field.
 SCAN_CAMPAN_DEG = [60.0, 30.0, 0.0, -30.0, -60.0]
@@ -107,6 +141,14 @@ PLACE_REACH_MM             = CAMERA_FORWARD_OFFSET_MM   # 197.6 mm from turntabl
 HOME_NUDGE_DEG  = 5.0
 HOME_TIMEOUT_S  = 30.0
 HOME_BACKOFF    = 200   # steps
+
+# Scan-decision image saving — copies the annotated frame the vision node writes
+# to ``VISION_LATEST_JPG`` after each campan pan, so the user can see what each
+# pan's marshmallow decision was based on. Requires the vision node to be
+# launched with ``debug_save_enabled:=true`` (otherwise latest.jpg is absent and
+# snapshots silently no-op).
+VISION_LATEST_JPG  = Path("/runtime_output/vision/latest.jpg")
+SCAN_SNAPSHOT_DIR  = Path("/runtime_output/turntable_pick_place")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -243,6 +285,25 @@ def _detection_height_mm(det: dict, img_w: int, img_h: int, dist_mm: float) -> f
     return max(0.0, min(500.0, CAMERA_HEIGHT_MM + dist_mm * math.tan(math.radians(elev_deg))))
 
 
+def _save_scan_snapshot(run_id: str, label: str) -> Path | None:
+    """Copy the vision node's latest annotated frame to a labeled snapshot.
+
+    Returns the destination path, or None if the source frame is missing
+    (vision node likely launched without debug_save_enabled=true) or the
+    copy fails. Does not raise — the test should keep running either way.
+    """
+    if not VISION_LATEST_JPG.is_file():
+        return None
+    try:
+        SCAN_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        dest = SCAN_SNAPSHOT_DIR / f"scan_{run_id}_{label}.jpg"
+        shutil.copyfile(VISION_LATEST_JPG, dest)
+        return dest
+    except OSError as exc:
+        print(f"[TEST] WARNING: failed to save snapshot {label}: {exc}")
+        return None
+
+
 # ── Main FSM ──────────────────────────────────────────────────────────────────
 
 def run(robot: Robot) -> None:  # noqa: C901
@@ -368,12 +429,21 @@ def run(robot: Robot) -> None:  # noqa: C901
                 img_w, img_h = robot.get_detection_image_size()
                 cup_mallow_hits:      list[dict] = []
                 fallback_mallow_hits: list[dict] = []
+                run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pan_snapshots: dict[float, Path] = {}
 
                 for pan_deg in SCAN_CAMPAN_DEG:
                     _campan_to_deg(robot, pan_deg)
                     time.sleep(CAMPAN_SETTLE_S)
                     cup_dets    = robot.get_detections(CUP_CLASS)
                     mallow_dets = robot.get_detections(MARSHMALLOW_CLASS)
+
+                    # Save the annotated frame the vision node just published, so
+                    # we have a per-pan record of what the model called a
+                    # marshmallow. Tagged with the pan angle for later lookup.
+                    snap = _save_scan_snapshot(run_id, f"pan{int(round(pan_deg)):+03d}")
+                    if snap is not None:
+                        pan_snapshots[pan_deg] = snap
 
                     # Cup+mallow pairing
                     for cup in cup_dets:
@@ -405,6 +475,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                                 "dist_mm":     cup_dist,
                                 "height_mm":   best_height,
                                 "conf":        best_conf,
+                                "pan_deg":     pan_deg,
                             })
 
                     # Mallow-only fallback
@@ -422,7 +493,8 @@ def run(robot: Robot) -> None:  # noqa: C901
                             "height_mm":   snap_to_cup_tier_mm(
                                 _detection_height_mm(mallow, img_w, img_h, m_dist)
                             ),
-                            "conf": float(mallow["confidence"]),
+                            "conf":    float(mallow["confidence"]),
+                            "pan_deg": pan_deg,
                         })
 
                 _campan_to_deg(robot, 0.0)
@@ -440,11 +512,27 @@ def run(robot: Robot) -> None:  # noqa: C901
                           f"dist={mallow_dist_est:.0f} mm  "
                           f"height={mallow_height_est:.0f} mm  "
                           f"conf={best['conf']:.2f}")
+
+                    # Mark which pan's frame was the decider so it's easy to
+                    # find later when reviewing what the camera actually saw.
+                    decider = pan_snapshots.get(best["pan_deg"])
+                    if decider is not None:
+                        try:
+                            SCAN_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                            decider_link = SCAN_SNAPSHOT_DIR / f"scan_{run_id}_decider.jpg"
+                            shutil.copyfile(decider, decider_link)
+                            print(f"[TEST] SCANNING — decider image: {decider_link}")
+                        except OSError as exc:
+                            print(f"[TEST] SCANNING — decider image at {decider} (copy failed: {exc})")
+                    else:
+                        print("[TEST] SCANNING — decider image unavailable "
+                              "(launch vision with debug_save_enabled:=true to capture it)")
                     state = "RANGING"
                     state_entry = time.monotonic()
 
         # ── RANGING ───────────────────────────────────────────────────────────
-        # Safe-retract + rotate, re-extend to search pose, fire US, solve IK.
+        # Safe-retract + rotate, drop to point-down pose, refine via cup
+        # detection (cup centre = marshmallow centre), fall back to US, IK.
         elif state == "RANGING":
             if robot.get_button(Button.BTN_2):
                 robot.stop()
@@ -457,24 +545,44 @@ def run(robot: Robot) -> None:  # noqa: C901
                 shoulder_pos, elbow_pos, gripper_pos,
             )
 
-            # Re-extend to search pose so US sensor faces the target
+            # Drop to the point-down pose so the forearm (and the ultrasonic)
+            # tilts toward the cup. This pose also keeps the camera view of
+            # the cup unobstructed by the arm.
             shoulder_pos = _move_servo(
-                robot, SHOULDER_CHANNEL, shoulder_pos, SAFE_SHOULDER_DEG,
+                robot, SHOULDER_CHANNEL, shoulder_pos, RANGING_SHOULDER_DEG,
                 SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX,
             )
             elbow_pos = _move_servo(
-                robot, ELBOW_CHANNEL, elbow_pos, SAFE_ELBOW_DEG,
+                robot, ELBOW_CHANNEL, elbow_pos, RANGING_ELBOW_DEG,
                 ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
             )
-            time.sleep(0.3)
 
-            # Camera-model position estimate
+            # Centre the campan on the chosen target so the cup occupies the
+            # middle of the frame — cleanest bbox for the diameter→distance
+            # calculation. Clamp to the campan's mechanical range.
+            camera_pan_deg = max(-RANGING_CAMPAN_MAX_DEG,
+                                 min(RANGING_CAMPAN_MAX_DEG, arm_turntable_deg))
+            _campan_to_deg(robot, camera_pan_deg)
+            time.sleep(RANGING_CUP_SETTLE_S)
+
+            # Default to the SCANNING estimate so a total refinement failure
+            # still leaves usable mallow coordinates downstream.
             bearing_rad = math.radians(arm_turntable_deg)
             mallow_x = ARM_GEOMETRY.camera_forward_offset_mm + mallow_dist_est * math.cos(bearing_rad)
             mallow_y = mallow_dist_est * math.sin(bearing_rad)
             mallow_z = mallow_height_est
 
-            # Ultrasonic refinement
+            refined = False
+
+            # Preferred refinement: ultrasonic with cup-radius back-projection.
+            # d_raw is the 3-D distance from the US sensor to the cup's NEAR
+            # wall.  The marshmallow sits on the cup's centre axis, so we
+            # project the beam past the near wall by one cup radius along the
+            # horizontal forearm direction.  Geometrically that's:
+            #   horiz(beam to wall)  = d_raw * cos(forearm_rad)
+            #   horiz(beam to centre) = horiz(beam to wall) + CUP_DIAMETER_MM/2
+            # Combined with sensor_horiz (US horizontal reach from turntable),
+            # mallow_reach gives the radial distance to the cup CENTRE.
             try:
                 d_raw = robot.get_ultrasonic_mm()
                 if d_raw is not None and 20.0 < d_raw < 800.0:
@@ -486,15 +594,53 @@ def run(robot: Robot) -> None:  # noqa: C901
                     sensor_horiz = (ARM_GEOMETRY.shoulder_offset_mm
                                     + ARM_GEOMETRY.L1 * math.cos(sh_rad)
                                     + ULTRASONIC_FOREARM_OFFSET_MM * math.cos(forearm_rad))
-                    mallow_reach = sensor_horiz + d_raw * math.cos(forearm_rad)
+                    mallow_reach = (sensor_horiz
+                                    + d_raw * math.cos(forearm_rad)
+                                    + CUP_DIAMETER_MM / 2.0)
                     mallow_x = mallow_reach * math.cos(bearing_rad)
                     mallow_y = mallow_reach * math.sin(bearing_rad)
-                    print(f"[TEST] RANGING — US={d_raw:.0f} mm  reach={mallow_reach:.0f} mm")
+                    refined = True
+                    print(f"[TEST] RANGING — US refine: US={d_raw:.0f} mm  "
+                          f"reach={mallow_reach:.0f} mm  "
+                          f"(+{CUP_DIAMETER_MM/2.0:.0f} mm cup-radius correction)")
                 else:
                     print(f"[TEST] RANGING — US {'None' if d_raw is None else f'{d_raw:.0f} mm'} "
-                          f"out of range — using camera estimate.")
+                          f"out of range at {arm_turntable_deg:.1f}° — trying camera.")
             except Exception as exc:
-                print(f"[TEST] RANGING — US error ({exc}) — using camera estimate.")
+                print(f"[TEST] RANGING — US error ({exc}) — trying camera.")
+
+            # Fallback: cup detection (camera pinhole formula gives cup centre).
+            # Only consulted if US failed; if both fail, we keep the SCANNING
+            # estimate so picking can still proceed.
+            if not refined:
+                img_w, img_h = robot.get_detection_image_size()
+                best_cup = None
+                best_cup_conf = MIN_CONFIDENCE_CUP
+                for cup in robot.get_detections(CUP_CLASS):
+                    cc = float(cup["confidence"])
+                    if cc < best_cup_conf:
+                        continue
+                    cup_world_bearing = camera_pan_deg + _detection_bearing_deg(cup, img_w)
+                    if abs(cup_world_bearing - arm_turntable_deg) > MALLOW_CUP_BEARING_MATCH_DEG:
+                        continue
+                    best_cup = cup
+                    best_cup_conf = cc
+
+                if best_cup is not None:
+                    cup_dist     = _cup_dist_mm(best_cup, img_w)
+                    cup_bearing  = camera_pan_deg + _detection_bearing_deg(best_cup, img_w)
+                    refined_rad  = math.radians(cup_bearing)
+                    mallow_x = ARM_GEOMETRY.camera_forward_offset_mm + cup_dist * math.cos(refined_rad)
+                    mallow_y = cup_dist * math.sin(refined_rad)
+                    refined = True
+                    snap = _save_scan_snapshot(
+                        datetime.now().strftime("%Y%m%d_%H%M%S"), "ranging_cup")
+                    snap_msg = f"  snapshot={snap}" if snap else ""
+                    print(f"[TEST] RANGING — camera fallback refine: dist={cup_dist:.0f} mm  "
+                          f"bearing={cup_bearing:.1f}°  conf={best_cup_conf:.2f}{snap_msg}")
+                else:
+                    print(f"[TEST] RANGING — no camera cup match at "
+                          f"{arm_turntable_deg:.1f}° — using SCANNING estimate.")
 
             print(f"[TEST] RANGING — IK target: x={mallow_x:.0f} y={mallow_y:.0f} z={mallow_z:.0f} mm")
 

@@ -203,8 +203,10 @@ class Robot(HardwareMixin, SensorsMixin, NavigationMixin, LegacyMixin):
     LAPF_FORCE_EMA_ALPHA: float = 0.35
     LAPF_INFLATION_MARGIN_MM: float = 200.0
 
-    _SERVO_MIN_US: int = 1000
-    _SERVO_MAX_US: int = 2000
+    _SERVO_MIN_US: int =  500   # was 1000 — DS3235 full pulse range per datasheet
+    _SERVO_MAX_US: int = 2500   # was 2000 — script now drives the full mechanical
+                                # range instead of only the middle 50% the UI was
+                                # already using.
     _SHUTDOWN_SETTLE_S: float = 0.10
 
     def __init__(

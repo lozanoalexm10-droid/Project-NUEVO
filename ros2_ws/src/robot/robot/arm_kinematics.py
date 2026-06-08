@@ -131,6 +131,8 @@ def inverse_kinematics(
     y_mm: float,
     z_mm: float,
     geom: ArmGeometry,
+    *,
+    elbow_up: bool = True,
 ) -> tuple[float, float, float]:
     """
     Compute joint angles to place the gripper at (x_mm, y_mm, z_mm) in robot frame.
@@ -140,6 +142,19 @@ def inverse_kinematics(
 
     turntable_deg is a rotation angle — convert to stepper steps with
     turntable_deg_to_steps() from _manipulator_config.py.
+
+    The 2-link planar IK (shoulder + elbow) has two solutions for any reachable
+    target.  ``elbow_up`` picks between them:
+
+      elbow_up=True  (default) — upper arm angled UP, forearm angled DOWN to
+                                 the target.  The elbow joint sits ABOVE the
+                                 straight line from shoulder pivot to gripper.
+                                 This matches the NUEVO physical arm: the
+                                 elbow hinge folds in this direction only.
+      elbow_up=False           — upper arm angled DOWN, forearm angled toward
+                                 the target.  Elbow sits below the line.
+                                 The physical arm cannot fold this way —
+                                 provided for educational comparison only.
 
     Raises OutOfReachError if the target is outside the arm workspace.
     """
@@ -175,12 +190,16 @@ def inverse_kinematics(
     cos_elbow_geo = max(-1.0, min(1.0, cos_elbow_geo))  # clamp floating point noise
     # elbow_geo convention: 180° = straight, 0° = fully folded (supplement of the
     # raw law-of-cosines angle, which is 0 when straight).
-    elbow_geo = 180.0 - math.degrees(math.acos(cos_elbow_geo))
+    # The two IK branches give elbow_geo = 180 ± acos(cos_elbow_geo).
+    #   +acos: elbow_geo > 180 → elbow above shoulder→gripper line ("elbow up")
+    #   -acos: elbow_geo < 180 → elbow below the line ("elbow down")
+    acos_deg = math.degrees(math.acos(cos_elbow_geo))
+    elbow_geo = 180.0 + acos_deg if elbow_up else 180.0 - acos_deg
 
     # Shoulder geometric angle (above horizontal).
-    # Because elbow_geo = 180 - q2_standard, sin(elbow_geo)=sin(q2) and
-    # cos(elbow_geo)=-cos(q2), so the standard beta denominator L1+L2*cos(q2)
-    # becomes L1 - L2*cos(elbow_geo).
+    # sin(elbow_geo) flips sign between the two branches (since one branch is
+    # 180+x and the other 180-x), which automatically flips beta and puts the
+    # upper arm on the correct side of the shoulder→gripper line.
     alpha = math.atan2(height, reach)
     beta = math.atan2(
         geom.L2 * math.sin(math.radians(elbow_geo)),
