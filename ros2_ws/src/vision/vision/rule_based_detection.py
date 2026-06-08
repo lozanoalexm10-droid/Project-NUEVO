@@ -85,11 +85,12 @@ def yellow_detection_score(contour_area: float, min_area_px: int, fill_ratio: fl
 def detect_marshmallow(
     frame_bgr: np.ndarray,
 ) -> tuple[list[DetectedObject], list[DebugOverlay]]:
-    """Detect a purple/violet marshmallow using HSV color + shape filtering.
+    """Detect a white marshmallow using HSV color + shape filtering.
 
-    Competition mallows are dyed blue-violet; the team uses food dye so the
-    targets read as saturated purple on camera.  The aspect-ratio filter
-    rejects thin strips (clothing, signage) that share the hue range.
+    Marshmallows read as white/off-white: very low saturation, high value.
+    Best used against a dark (e.g. blackboard) background so the white blob
+    stands out cleanly.  The aspect-ratio filter rejects thin strips (paper
+    edges, signage) and the area cap rejects large bright backgrounds.
     """
     detections: list[DetectedObject] = []
     debug_overlays: list[DebugOverlay] = []
@@ -97,10 +98,10 @@ def detect_marshmallow(
     blurred = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
 
-    # Blue-violet / purple. OpenCV HSV: H 0-180, S 0-255, V 0-255.
-    purple_low  = np.array([120,  60,  50], dtype=np.uint8)
-    purple_high = np.array([160, 255, 255], dtype=np.uint8)
-    mask = cv2.inRange(hsv, purple_low, purple_high)
+    # White: any hue, low saturation, high value. OpenCV HSV: H 0-180, S 0-255, V 0-255.
+    white_low  = np.array([0,   0, 170], dtype=np.uint8)
+    white_high = np.array([180, 60, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, white_low, white_high)
 
     # Open removes isolated noise; close fills small gaps inside the blob.
     open_kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -143,11 +144,11 @@ def detect_marshmallow(
             width=int(width),
             height=int(height),
         )
-        detection.add_attribute("color", "purple", 1.0)
+        detection.add_attribute("color", "white", 1.0)
         detections.append(detection)
         debug_overlays.append(
             DebugOverlay(
-                color=(200, 80, 200),
+                color=(255, 255, 255),
                 contour=contour,
                 label=f"marshmallow {confidence:.2f}",
                 x=int(x),

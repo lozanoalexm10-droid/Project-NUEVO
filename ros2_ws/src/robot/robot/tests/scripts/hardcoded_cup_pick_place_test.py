@@ -1,72 +1,35 @@
 """
-manual_ik_pick_place_test.py
-============================
-Manual IK verification test: provide the marshmallow position directly (no
-camera scan, no sensor input) and execute the full pick-and-place task.
+hardcoded_cup_pick_place_test.py
+================================
+Pick-and-place with HARDCODED cup positions + a camera "which cup / how tall"
+classification pass.  No LiDAR.
 
-Use this to verify that inverse_kinematics() can grab a mallow at a known
-position and place it on the plate, without any vision or sensing involved.
+The idea
+--------
+The four cup-stack positions (x, y) are fixed and known (measured by hand).
+The four stack HEIGHTS are also a known, fixed set — but which physical
+position holds which height is RANDOM each run.  So the camera does two jobs
+during its opening pan across the cups:
 
-HOW TO MEASURE THE THREE INPUTS
----------------------------------
-  MALLOW_BEARING_DEG
-      Horizontal angle of the mallow in robot frame.
-      0° = straight forward, positive = left, negative = right.
-      Keep at 0.0 while the turntable is at the forward (0°) position.
+  1. Ranks the cups by apparent height (tallest → shortest) and maps that
+     ordering onto the sorted known mallow-centre heights, giving each cup
+     position its correct z.  Relative ranking is robust to the camera's
+     downward tilt bias — every cup is biased the same way, so the *order*
+     survives even when the absolute height estimate is off.
+  2. Finds which cup has the (white) marshmallow on top.
 
-  MALLOW_DIST_MM
-      Horizontal distance from the camera/campan lens to the center of the
-      marshmallow (mm). Measure with a ruler from the front of the camera
-      housing to the mallow center.
-
-      NOTE: this is distance from the camera axis, not from the turntable
-      axis. The camera sits ~209 mm ahead of the turntable axis. If you
-      measure from the turntable axis instead, subtract CAMERA_FORWARD_OFFSET_MM
-      and set DIST_IS_FROM_TURNTABLE_AXIS = True below.
-
-  MALLOW_HEIGHT_MM
-      Height of the marshmallow center above the robot base plate (mm).
-      The base plate is z = 0. The competition floor is z ≈ -229 mm.
-      Typical values:
-        mallow on floor alone:  ≈ -204 mm  (floor + marshmallow radius 12.5 mm)
-        mallow on 1 Solo cup:   ≈ -116 mm
-        mallow on 2 Solo cups:  ≈  -22 mm
-        mallow on 3 Solo cups:  ≈  +72 mm
-
-COORDINATE MATH (for verification)
--------------------------------------
-  Robot frame: origin at turntable axis, +x forward, +y left, +z up.
-
-  Bearing → robot frame:
-    bearing_rad = radians(MALLOW_BEARING_DEG)
-    x = CAMERA_FORWARD_OFFSET_MM + MALLOW_DIST_MM * cos(bearing_rad)
-    y = MALLOW_DIST_MM * sin(bearing_rad)
-    z = MALLOW_HEIGHT_MM
-
-  IK step 1 — turntable azimuth:
-    turntable_deg = atan2(y, x)
-    (for bearing=0 and y=0 this is 0° — straight forward)
-
-  IK step 2 — arm plane coordinates:
-    reach  = hypot(x, y) - shoulder_offset_mm    (≈14 mm forward offset)
-    height = z - shoulder_height_mm              (≈95 mm shoulder height)
-    d      = sqrt(reach² + height²)              (straight-line dist from shoulder to target)
-
-  IK step 3 — 2-link planar IK (law of cosines):
-    cos_elbow_geo = (d² - L1² - L2²) / (2·L1·L2)   L1=156mm, L2=315mm
-    elbow_geo     = 180° - acos(cos_elbow_geo)       180=straight, 0=folded
-    alpha = atan2(height, reach)                      angle to target from horizontal
-    beta  = atan2(L2·sin(elbow_geo), L1-L2·cos(elbow_geo))  elbow contribution
-    shoulder_geo  = alpha - beta                      degrees above horizontal
-
-  IK step 4 — servo conversion:
-    shoulder_servo = shoulder_servo_offset + shoulder_servo_sign * shoulder_geo
-    elbow_servo    = elbow_servo_offset   + elbow_servo_sign   * (elbow_geo - 180°)
+It then feeds the chosen cup's (x, y, rank-assigned z) into the exact same
+manual-IK pick-and-place sequence used by manual_ik_pick_place_test.py — the
+careful COM-over-shoulder SAFE_RAISE, the squeeze-and-hold grip, and the
+fixed place target.
 
 State machine
 -------------
-  INIT → IDLE → SAFE_RAISE → ARM_HOME → IK_COMPUTE
-       → APPROACHING → PICKING → CARRY_TO_PLACE → PLACING → RESTOW → DONE
+  INIT → IDLE → SAFE_RAISE → ARM_HOME → VISION_FIND_CUP
+       → IK_COMPUTE → APPROACHING → PICKING → CARRY_TO_PLACE
+       → PLACING → RESTOW → DONE
+
+Nodes required: bridge (auto) + vision + robot.  No lidar node needed.
 """
 from __future__ import annotations
 
@@ -76,26 +39,43 @@ import time
 from robot.arm_kinematics import OutOfReachError, forward_kinematics, inverse_kinematics
 from robot.hardware_map import Button, DEFAULT_FSM_HZ, LED, Limit, StepMoveType
 from robot.robot import FirmwareState, Robot
+from robot.tests.scripts._cup_scan_logic import (
+    assign_heights_by_rank,
+    bbox_center_height_mm,
+    camera_bearing_to_cup,
+    cup_top_height_mm,
+    detection_center_bearing_deg,
+)
 from robot.tests.scripts._manipulator_config import (
     ARM_GEOMETRY,
     ARM_SERVO_STEP_DEG,
     ARM_SERVO_STEP_DWELL,
     CAMPAN_ACCELERATION,
     CAMPAN_MAX_VELOCITY,
+    CAMPAN_SETTLE_S,
     CAMPAN_STEPPER,
     CAMERA_FORWARD_OFFSET_MM,
+    CAMERA_HEIGHT_MM,
+    CAMERA_HFOV_DEG,
+    CUP_CLASS,
     ELBOW_CHANNEL,
     ELBOW_SAFE_MAX,
     ELBOW_SAFE_MIN,
     ELBOW_STOW_DEG,
     GRIPPER_CHANNEL,
     GRIPPER_CLOSE_DEG,
-    GRIPPER_GRAB_DEG,
     GRIPPER_OPEN_DEG,
+    MALLOW_CUP_BEARING_MATCH_DEG,
+    MALLOW_Z_STACK_9_MM,
+    MALLOW_Z_STACK_11_MM,
+    MALLOW_Z_STACK_14_MM,
+    MALLOW_Z_STACK_16_MM,
+    MARSHMALLOW_CLASS,
+    MIN_CONFIDENCE_CUP,
+    MIN_CONFIDENCE_MARSHMALLOW,
     PLACE_X_MM,
     PLACE_Y_MM,
     PLACE_Z_MM as CONFIG_PLACE_Z_MM,
-    PLATE_Z_MM,
     SHOULDER_CHANNEL,
     SHOULDER_SAFE_MAX,
     SHOULDER_SAFE_MIN,
@@ -107,65 +87,66 @@ from robot.tests.scripts._manipulator_config import (
     TURNTABLE_MIN_DEG,
     TURNTABLE_STEPPER,
     campan_deg_to_steps,
+    snap_to_venue_tier_mm,
     turntable_deg_to_steps,
 )
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐
-# │  EDIT THESE TO MATCH YOUR MEASURED SETUP                                   │
+# │  HARDCODED CUP POSITIONS — measured by hand                                 │
 # └─────────────────────────────────────────────────────────────────────────────┘
+# Each entry is (front_mm, side_mm), measured in the CAMERA frame:
+#   front = mm forward of the camera lens
+#   side  = lateral offset, POSITIVE = to the RIGHT of the camera
+# Converted to turntable frame at scan time:  x = front + CAMERA_FORWARD_OFFSET_MM,
+#                                             y = -side  (robot +y = left)
+HARDCODED_CUPS_CAMERA_MM: list[tuple[float, float]] = [
+    (90.0,  204.0),   # cup 1
+    (178.0, 103.0),   # cup 2
+    (201.0, -15.6),   # cup 3
+    (122.0, -183.0),  # cup 4
+]
 
-# Bearing of the marshmallow in robot frame.
-# 0° = straight forward.  Keep at 0.0 for a head-on test.
-MALLOW_BEARING_DEG: float = 0.0
+# The four known mallow-centre heights (robot frame z), sorted SHORTEST → TALLEST.
+# These come from _manipulator_config.py (9/11/14/16-cup stacks ≈ -62/-50/-30/-16).
+# Which physical cup has which height is decided at runtime by the camera ranking.
+KNOWN_MALLOW_Z_MM_SORTED: list[float] = sorted([
+    MALLOW_Z_STACK_9_MM,
+    MALLOW_Z_STACK_11_MM,
+    MALLOW_Z_STACK_14_MM,
+    MALLOW_Z_STACK_16_MM,
+])
 
-# Horizontal distance from the camera lens to the marshmallow center (mm).
-# Measure with a ruler from the camera housing face to the mallow center.
-# 7.628 in × 25.4 = 193.8 mm
-MALLOW_DIST_MM: float = 194.1
+# Command the pick this much ABOVE the rank-assigned mallow centre — the arm
+# sags under load and grabs low.  manual_ik_pick_place_test uses ~+11 mm.
+PICK_Z_LIFT_MM: float = 12.0
 
-# Height of the marshmallow center in robot frame (mm).
-# Base plate = 0 mm.  Floor measured at -244.2 mm below base plate.
-# Stack: 2.33 mm cardboard + 6 Solo cups (121 + 5×5.3 = 147.5 mm) + mallow half-height 13 mm
-# Mallow center = -244.2 + 2.33 + 147.5 + 13 = -81.37 mm
-MALLOW_HEIGHT_MM: float = -70.0   # was -78.4 (true mallow center); lifted by ~12 mm
-                                  # so the gripper actually reaches the mallow instead
-                                  # of grabbing the top of the cup — the arm sags lower
-                                  # than IK predicts under load.
+# ── Vision scan tunables ──────────────────────────────────────────────────────
+PICK_CAMPAN_SETTLE_S = CAMPAN_SETTLE_S + 0.3   # settle after panning before reading
+PICK_CAMPAN_MAX_DEG  = 66.0                    # campan physical pan limit
+VISION_WARMUP_TIMEOUT_S = 5.0                  # wait for first inference before scanning
 
-# Set True if you measured MALLOW_DIST_MM from the turntable axis instead of
-# from the camera. In that case the camera forward offset is NOT added.
-DIST_IS_FROM_TURNTABLE_AXIS: bool = False
-
-# ── Place target (same defaults as turntable_pick_place_test.py) ──────────────
-# Place target — pulled directly from _manipulator_config.py
-# (PLACE_X_MM, PLACE_Y_MM, PLACE_Z_MM = 128, -226, -201).
-# Drop location turntable angle: -80° = 80° to the RIGHT (negative = right).
+# ── Place target (same defaults as manual_ik_pick_place_test.py) ──────────────
 PLACE_TURNTABLE_DEG: float = -80.0
 PLACE_REACH_MM:      float = math.hypot(PLACE_X_MM, PLACE_Y_MM)
 PLACE_Z_MM:          float = CONFIG_PLACE_Z_MM
 
-# ── Grip strength ─────────────────────────────────────────────────────────────
-# The gripper is angle-commanded; "strength" = how far past contact it closes.
-# 0% = GRIPPER_OPEN_DEG (29°), 100% = GRIPPER_CLOSE_DEG (90°, hard stop).
-SQUEEZE_PERCENT: float = 90.0
-SQUEEZE_DEG:     float = GRIPPER_OPEN_DEG + (SQUEEZE_PERCENT / 100.0) * (GRIPPER_CLOSE_DEG - GRIPPER_OPEN_DEG)
-
 # ── Safe carry pose ───────────────────────────────────────────────────────────
-SAFE_SHOULDER_DEG = 110.0   # upper arm angled slightly up (geo ≈ +14°)
-SAFE_ELBOW_DEG    = 70.0    # forearm tucked — works empirically (grab succeeded).
+SAFE_SHOULDER_DEG = 110.0
+SAFE_ELBOW_DEG    = 70.0
 
 # ── Turntable homing ──────────────────────────────────────────────────────────
 HOME_NUDGE_DEG = 5.0
 HOME_TIMEOUT_S = 30.0
 HOME_BACKOFF   = 200
-# Limit switch fires before the full mechanical stow position. Measured on
-# this robot: LIM1 trips at ~171° instead of 180°, so commanding 0° using a
-# home_offset of 180° overshoots forward by ~9°. Use the measured value
-# (matches TURNTABLE_HOME_OFFSET_DEG in _manipulator_config.py).
 TURNTABLE_HOME_OFFSET_MEASURED_DEG = TURNTABLE_HOME_OFFSET_DEG
 
+# Distance from the camera lens to the campan stepper axis (mm). The campan
+# pivot sits this much closer to the robot than the lens.
+CAMPAN_OFFSET_FROM_CAMERA_MM = 38.7
+CAMPAN_FORWARD_OFFSET_MM     = CAMERA_FORWARD_OFFSET_MM - CAMPAN_OFFSET_FROM_CAMERA_MM
 
-# ── Helpers (mirrors turntable_pick_place_test.py exactly) ────────────────────
+
+# ── Servo / motion helpers (mirror manual_ik_pick_place_test.py exactly) ──────
 
 def _move_servo(
     robot: Robot,
@@ -191,8 +172,7 @@ def _hold_grip(robot: Robot, angle: float, seconds: float, label: str = "hold") 
     """Wait `seconds` while actively re-asserting the gripper at `angle`.
 
     The firmware relaxes actuators when the host goes quiet, so a plain sleep
-    would let the grip drift. Re-commanding (and re-enabling) every ~0.4 s keeps
-    the jaw exactly where we want it through each timed pause.
+    would let the grip drift. Re-commanding every ~0.4 s keeps the jaw put.
     """
     print(f"[TEST]   {label}: holding gripper at {angle:.0f}° for {seconds:.0f}s")
     deadline = time.monotonic() + seconds
@@ -208,9 +188,8 @@ def _safe_arm_retract(
     elbow_pos: float,
     gripper_pos: float,
 ) -> tuple[float, float, float]:
-    # NOTE: do NOT change the gripper position here. After PICKING the gripper
-    # is at GRAB squeezing the mallow; closing it tighter and then having the
-    # caller relax it back to GRAB causes the mallow to drop.
+    # NOTE: do NOT change the gripper position here — after PICKING the gripper
+    # is squeezing the mallow and re-closing it would drop it.
     robot.enable_servo(SHOULDER_CHANNEL)
     robot.enable_servo(ELBOW_CHANNEL)
     robot.enable_servo(GRIPPER_CHANNEL)
@@ -225,13 +204,9 @@ def _turntable_to_deg(robot: Robot, target_deg: float, home_offset: float) -> No
     target_deg = max(TURNTABLE_MIN_DEG, min(TURNTABLE_MAX_DEG, target_deg))
     delta_deg  = abs(home_offset - target_deg)
     steps      = turntable_deg_to_steps(home_offset - target_deg)
-    # Fire-and-forget — _wait_stepper_idle consistently misses the brief
-    # IDLE→active→IDLE transition on the turntable so blocking just stalls the
-    # FSM for the full timeout while the move itself completes correctly.
-    # Sleep for the worst-case travel time at TURNTABLE_MAX_VELOCITY plus a
-    # safety margin to cover the trapezoidal velocity profile and settling.
+    # Fire-and-forget — blocking stalls the FSM on a missed IDLE transition.
     robot.step_move(TURNTABLE_STEPPER, steps, StepMoveType.ABSOLUTE, blocking=False)
-    deg_per_sec = TURNTABLE_MAX_VELOCITY * (360.0 / 3200.0)  # 2800 steps/s ≈ 315°/s
+    deg_per_sec = TURNTABLE_MAX_VELOCITY * (360.0 / 3200.0)
     travel_s    = delta_deg / deg_per_sec + 0.5
     time.sleep(travel_s)
 
@@ -248,10 +223,7 @@ def _home_turntable(robot: Robot) -> float:
         print("[HOME] WARNING: CW nudge timed out — proceeding anyway.")
     time.sleep(0.3)
 
-    lim1_state = "TRIGGERED" if robot.get_limit(Limit.LIM_1) else "open"
-    print(f"[HOME] LIM1 after nudge: {lim1_state}")
     print(f"[HOME] Homing CCW to LIM1 (timeout={HOME_TIMEOUT_S:.0f}s)...")
-
     ok = robot.step_home(
         TURNTABLE_STEPPER,
         direction=-1,
@@ -259,9 +231,6 @@ def _home_turntable(robot: Robot) -> float:
         backoff_steps=HOME_BACKOFF,
         timeout=HOME_TIMEOUT_S,
     )
-
-    lim1_state = "TRIGGERED" if robot.get_limit(Limit.LIM_1) else "open"
-    print(f"[HOME] LIM1 after home attempt: {lim1_state}")
 
     if ok:
         print(f"[HOME] Turntable homed.  Firmware step 0 = stow "
@@ -274,49 +243,150 @@ def _home_turntable(robot: Robot) -> float:
 
 
 def _campan_to_deg(robot: Robot, target_deg: float) -> None:
-    # Fire-and-forget — see comment in _turntable_to_deg. Campan range is small
-    # so a fixed 1 s settle covers the worst-case sweep.
     robot.step_move(CAMPAN_STEPPER, campan_deg_to_steps(target_deg),
                     StepMoveType.ABSOLUTE, blocking=False)
     time.sleep(1.0)
 
 
-# Distance from the camera lens to the campan stepper motor axis (mm).
-# The mallow zone half-circles are now centered below the campan axis, which
-# sits this much CLOSER to the robot than the camera lens.
-CAMPAN_OFFSET_FROM_CAMERA_MM = 38.7
-CAMPAN_FORWARD_OFFSET_MM     = CAMERA_FORWARD_OFFSET_MM - CAMPAN_OFFSET_FROM_CAMERA_MM
+# ── Vision helpers ────────────────────────────────────────────────────────────
+
+def _build_cups() -> list[dict[str, float]]:
+    """Convert the hardcoded camera-frame measurements to turntable-frame dicts."""
+    cups: list[dict[str, float]] = []
+    for i, (front, side) in enumerate(HARDCODED_CUPS_CAMERA_MM):
+        cups.append({
+            "id":   float(i + 1),
+            "x_mm": front + CAMERA_FORWARD_OFFSET_MM,
+            "y_mm": -side,
+        })
+    return cups
 
 
-def _bearing_dist_to_robot_frame(
-    bearing_deg: float,
-    dist_mm: float,
-    height_mm: float,
-) -> tuple[float, float, float]:
+def _detection_center_bearing_deg(det: dict, img_w: int) -> float:
+    """Bearing of a detection's bbox centre from frame centre (config-wired)."""
+    return detection_center_bearing_deg(det, img_w, CAMERA_HFOV_DEG)
+
+
+def _cup_top_height_mm(det: dict, img_w: int, img_h: int, dist_mm: float) -> float:
+    """Robot-frame z of the TOP edge of a red-cup bbox (config-wired).
+
+    Uses the bbox top edge so the estimate tracks stack height; only the
+    relative ORDER across cups is used downstream, so the camera-tilt bias
+    (MANIPULATOR_TASKS.md §0) cancels out.
     """
-    Convert (bearing, distance, height) to robot-frame (x, y, z) for IK.
+    return cup_top_height_mm(det, img_w, img_h, dist_mm, CAMERA_HFOV_DEG, CAMERA_HEIGHT_MM)
 
-    bearing_deg: horizontal angle in robot frame (0=forward, + =left, - =right)
-    dist_mm:     horizontal distance — from the CAMPAN STEPPER MOTOR AXIS if
-                 DIST_IS_FROM_TURNTABLE_AXIS=False, from turntable axis if True.
-                 The campan axis is CAMPAN_OFFSET_FROM_CAMERA_MM (=38.7 mm) closer
-                 to the robot than the camera lens — the mallow zone half-circles
-                 are now centered below this point.
-    height_mm:   z in robot frame (base plate = 0)
 
-    Returns (x_mm, y_mm, z_mm) with turntable axis as origin, ready for IK.
+def _camera_bearing_to_cup(x_mm: float, y_mm: float) -> float:
+    """Campan-frame bearing to a turntable-frame point (turntable parked at 0°)."""
+    return camera_bearing_to_cup(x_mm, y_mm, CAMPAN_FORWARD_OFFSET_MM)
+
+
+def _wait_vision_ready(robot: Robot, timeout_s: float) -> tuple[int, int]:
+    """Poll get_detection_image_size() until the vision node publishes a frame.
+
+    Avoids racing the node's first inference (see MANIPULATOR_TASKS.md §0).
     """
-    bearing_rad = math.radians(bearing_deg)
-    if DIST_IS_FROM_TURNTABLE_AXIS:
-        x_mm = dist_mm * math.cos(bearing_rad)
-        y_mm = dist_mm * math.sin(bearing_rad)
-    else:
-        # Distance is measured from the CAMERA FOCAL LENS, which sits
-        # CAMERA_FORWARD_OFFSET_MM ahead of the turntable axis. Both the
-        # marshmallow and the cups are measured from the camera lens.
-        x_mm = CAMERA_FORWARD_OFFSET_MM + dist_mm * math.cos(bearing_rad)
-        y_mm = dist_mm * math.sin(bearing_rad)
-    return x_mm, y_mm, height_mm
+    deadline = time.monotonic() + timeout_s
+    img_w, img_h = robot.get_detection_image_size()
+    while (img_w <= 0 or img_h <= 0) and time.monotonic() < deadline:
+        time.sleep(0.1)
+        img_w, img_h = robot.get_detection_image_size()
+    return img_w, img_h
+
+
+def _scan_cups(robot: Robot, cups: list[dict[str, float]]) -> list[dict[str, float]]:
+    """Pan the camera to each hardcoded cup and record its measured top height
+    and any marshmallow detection sitting on it.
+
+    Augments each cup dict in place with:
+      top_mm       — estimated top-of-stack z, or None if no cup detected
+      mallow_conf  — best marshmallow confidence on this cup (0.0 if none)
+      mallow_det   — the marshmallow detection dict (for fallback height), or None
+    """
+    img_w, img_h = _wait_vision_ready(robot, VISION_WARMUP_TIMEOUT_S)
+    if img_w <= 0 or img_h <= 0:
+        print("[VISION] WARNING: no vision frame after warm-up; scan may be empty.")
+
+    for cup in cups:
+        cam_bearing = _camera_bearing_to_cup(cup["x_mm"], cup["y_mm"])
+        clamped     = max(-PICK_CAMPAN_MAX_DEG, min(PICK_CAMPAN_MAX_DEG, cam_bearing))
+        cup["cam_bearing_deg"] = cam_bearing
+        cup["pan_deg"]         = clamped
+        # Where the cup should appear in-frame after the (possibly clamped) pan.
+        expected_in_frame = cam_bearing - clamped
+
+        _campan_to_deg(robot, clamped)
+        time.sleep(PICK_CAMPAN_SETTLE_S)
+
+        dist_mm = math.hypot(cup["x_mm"] - CAMERA_FORWARD_OFFSET_MM, cup["y_mm"])
+
+        # --- cup top height (for ranking) ---
+        cup["top_mm"] = None
+        best_cup = None
+        for det in robot.get_detections(CUP_CLASS):
+            if float(det["confidence"]) < MIN_CONFIDENCE_CUP:
+                continue
+            b = _detection_center_bearing_deg(det, img_w)
+            if abs(b - expected_in_frame) > MALLOW_CUP_BEARING_MATCH_DEG:
+                continue
+            if best_cup is None or float(det["confidence"]) > float(best_cup["confidence"]):
+                best_cup = det
+        if best_cup is not None:
+            cup["top_mm"] = _cup_top_height_mm(best_cup, img_w, img_h, dist_mm)
+
+        # --- marshmallow presence ---
+        cup["mallow_conf"] = 0.0
+        cup["mallow_det"]  = None
+        for det in robot.get_detections(MARSHMALLOW_CLASS):
+            conf = float(det["confidence"])
+            if conf < MIN_CONFIDENCE_MARSHMALLOW:
+                continue
+            b = _detection_center_bearing_deg(det, img_w)
+            if abs(b - expected_in_frame) > MALLOW_CUP_BEARING_MATCH_DEG:
+                continue
+            if conf > cup["mallow_conf"]:
+                cup["mallow_conf"] = conf
+                cup["mallow_det"]  = det
+
+        top_str = f"{cup['top_mm']:+.0f} mm" if cup["top_mm"] is not None else "—"
+        print(f"[VISION] cup#{cup['id']:.0f} pan={clamped:+.1f}°  "
+              f"top≈{top_str}  mallow_conf={cup['mallow_conf']:.2f}")
+
+    _campan_to_deg(robot, 0.0)
+    return cups
+
+
+def _assign_heights_by_rank(cups: list[dict[str, float]]) -> bool:
+    """Rank cups by measured top height and map onto the sorted known heights.
+
+    Returns True if every cup got a rank-assigned z_mm (all four measured),
+    False if the height scan was incomplete (caller must fall back).
+    """
+    if not assign_heights_by_rank(cups, KNOWN_MALLOW_Z_MM_SORTED):
+        return False
+    for rank, cup in enumerate(sorted(cups, key=lambda c: c["top_mm"])):
+        print(f"[VISION] rank {rank} (top {cup['top_mm']:+.0f} mm) → cup#{cup['id']:.0f}"
+              f"  z={cup['z_mm']:+.0f} mm")
+    return True
+
+
+def _mallow_fallback_z_mm(cup: dict, img_w: int, img_h: int) -> float:
+    """Last-resort z for the target cup when rank-assignment was not possible.
+
+    Snap the target's own measured height (cup top, else marshmallow bbox) to
+    the nearest known tier so we still command a sane height.
+    """
+    if cup.get("top_mm") is not None:
+        return snap_to_venue_tier_mm(cup["top_mm"])
+    det = cup.get("mallow_det")
+    if det is not None and img_w > 0 and img_h > 0:
+        dist_mm = math.hypot(cup["x_mm"] - CAMERA_FORWARD_OFFSET_MM, cup["y_mm"])
+        raw_z   = bbox_center_height_mm(
+            det, img_w, img_h, dist_mm, CAMERA_HFOV_DEG, CAMERA_HEIGHT_MM)
+        return snap_to_venue_tier_mm(raw_z)
+    # Nothing to go on — middle of the known set.
+    return KNOWN_MALLOW_Z_MM_SORTED[len(KNOWN_MALLOW_Z_MM_SORTED) // 2]
 
 
 # ── Main FSM ──────────────────────────────────────────────────────────────────
@@ -335,10 +405,9 @@ def run(robot: Robot) -> None:  # noqa: C901
     arm_elbow_deg:    float = ELBOW_STOW_DEG
     turntable_home_offset: float = TURNTABLE_HOME_OFFSET_DEG
 
-    # Pre-compute pick coordinates from manual inputs.
-    pick_x, pick_y, pick_z = _bearing_dist_to_robot_frame(
-        MALLOW_BEARING_DEG, MALLOW_DIST_MM, MALLOW_HEIGHT_MM
-    )
+    # Pick coordinates — filled in by VISION_FIND_CUP.
+    pick_x = pick_y = pick_z = 0.0
+    pick_bearing_deg = 0.0
 
     # Pre-compute place coordinates.
     place_rad = math.radians(PLACE_TURNTABLE_DEG)
@@ -346,16 +415,14 @@ def run(robot: Robot) -> None:  # noqa: C901
     place_y   = PLACE_REACH_MM * math.sin(place_rad)
     place_z   = PLACE_Z_MM
 
-    print(f"[TEST] ── Manual IK Pick-Place ─────────────────────────────────")
-    print(f"[TEST] Mallow input: bearing={MALLOW_BEARING_DEG:.1f}°  "
-          f"dist={MALLOW_DIST_MM:.0f} mm  height={MALLOW_HEIGHT_MM:.0f} mm")
-    dist_ref = "turntable axis" if DIST_IS_FROM_TURNTABLE_AXIS else "camera lens"
-    print(f"[TEST]   (distance measured from {dist_ref})")
-    print(f"[TEST] Pick robot-frame:  x={pick_x:.0f}  y={pick_y:.0f}  z={pick_z:.0f} mm")
+    print("[TEST] ── Hardcoded Cup Pick-Place ─────────────────────────────────")
+    print(f"[TEST] {len(HARDCODED_CUPS_CAMERA_MM)} hardcoded cups; "
+          f"known heights (sorted) = "
+          f"{[round(z) for z in KNOWN_MALLOW_Z_MM_SORTED]} mm")
     print(f"[TEST] Place robot-frame: x={place_x:.0f}  y={place_y:.0f}  z={place_z:.0f} mm")
     print(f"[TEST] Shoulder height={ARM_GEOMETRY.shoulder_height_mm:.0f} mm  "
           f"L1={ARM_GEOMETRY.L1:.0f} mm  L2={ARM_GEOMETRY.L2:.0f} mm")
-    print(f"[TEST] ───────────────────────────────────────────────────────────")
+    print("[TEST] ───────────────────────────────────────────────────────────")
 
     while True:
 
@@ -364,6 +431,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             if robot.get_state() in (FirmwareState.ESTOP, FirmwareState.ERROR):
                 robot.reset_estop()
             robot.set_state(FirmwareState.RUNNING)
+            robot.enable_vision()
             robot.set_led(LED.GREEN, 0)
             robot.set_led(LED.ORANGE, 255)
             state = "IDLE"
@@ -389,12 +457,9 @@ def run(robot: Robot) -> None:  # noqa: C901
             robot.enable_servo(GRIPPER_CHANNEL)
             time.sleep(0.4)
 
-            # Fold the elbow ALL THE WAY IN first so the forearm sits roughly
-            # above the upper arm — that puts the arm's COM directly over the
-            # shoulder pivot and minimizes the gravity moment the shoulder has
-            # to overcome on the lift. Then we lift the shoulder, then return
-            # the elbow to the desired safe pose with shoulder already up.
-            TIGHT_ELBOW_DEG = 25.0  # near ELBOW_SAFE_MIN — max fold inward
+            # Tight-fold the elbow first so the arm COM sits over the shoulder
+            # pivot, minimising the gravity moment during the lift.
+            TIGHT_ELBOW_DEG = 25.0
             print(f"[TEST] SAFE_RAISE — tight-folding elbow {elbow_pos:.1f}° → "
                   f"{TIGHT_ELBOW_DEG:.1f}° (COM over shoulder).")
             elbow_pos = _move_servo(
@@ -403,9 +468,6 @@ def run(robot: Robot) -> None:  # noqa: C901
             )
             time.sleep(0.4)
 
-            # Direct shoulder lift with the elbow tight-folded over the pivot.
-            # Hammer the target value with hold writes so even if the first
-            # command is dropped, the next one lands.
             print(f"[TEST] SAFE_RAISE — raising shoulder {shoulder_pos:.1f}° → "
                   f"{SAFE_SHOULDER_DEG:.1f}° (direct set, no ramp).")
             for i in range(5):
@@ -413,8 +475,6 @@ def run(robot: Robot) -> None:  # noqa: C901
                 time.sleep(0.3 if i == 0 else 0.15)
             shoulder_pos = SAFE_SHOULDER_DEG
 
-            # Now that the shoulder is up, unfold the elbow to the desired
-            # safe pose so the arm is ready for IK.
             print(f"[TEST] SAFE_RAISE — unfolding elbow {elbow_pos:.1f}° → "
                   f"{SAFE_ELBOW_DEG:.1f}° (shoulder is up, gripper clear).")
             elbow_pos = _move_servo(
@@ -444,53 +504,86 @@ def run(robot: Robot) -> None:  # noqa: C901
             _turntable_to_deg(robot, 0.0, turntable_home_offset)
             time.sleep(0.5)
 
+            state = "VISION_FIND_CUP"
+            state_entry = time.monotonic()
+
+        # ── VISION_FIND_CUP ───────────────────────────────────────────────────
+        # Pan across the hardcoded cups: rank them by height (→ assign known z)
+        # and find which one holds the marshmallow.
+        elif state == "VISION_FIND_CUP":
+            if robot.get_button(Button.BTN_2):
+                robot.stop()
+                robot.shutdown()
+                return
+
+            print("[VISION] Scanning hardcoded cups for height + marshmallow.")
+            cups = _scan_cups(robot, _build_cups())
+
+            # One retry if no marshmallow showed up on the first pass.
+            if not any(c["mallow_conf"] > 0.0 for c in cups):
+                print("[VISION] No marshmallow on first pass — retrying once.")
+                time.sleep(0.5)
+                cups = _scan_cups(robot, _build_cups())
+
+            ranked_ok = _assign_heights_by_rank(cups)
+            if not ranked_ok:
+                print("[VISION] WARNING: incomplete height scan — could not rank all "
+                      "cups; will snap the target's own height instead.")
+
+            target = max(cups, key=lambda c: c["mallow_conf"])
+            if target["mallow_conf"] <= 0.0:
+                print("[VISION] No marshmallow detected on any cup — aborting.")
+                state = "RESTOW"
+                state_entry = time.monotonic()
+                continue
+
+            img_w, img_h = robot.get_detection_image_size()
+            assigned_z = target["z_mm"] if ranked_ok else _mallow_fallback_z_mm(
+                target, img_w, img_h)
+
+            pick_x = target["x_mm"]
+            pick_y = target["y_mm"]
+            pick_z = assigned_z + PICK_Z_LIFT_MM
+            pick_bearing_deg = math.degrees(math.atan2(pick_y, pick_x))
+
+            print(f"[VISION] TARGET cup#{target['id']:.0f}  conf={target['mallow_conf']:.2f}  "
+                  f"x={pick_x:.0f} y={pick_y:.0f}  "
+                  f"z={assigned_z:+.0f}{'+%.0f lift' % PICK_Z_LIFT_MM} = {pick_z:+.0f} mm  "
+                  f"bearing={pick_bearing_deg:+.1f}°")
             state = "IK_COMPUTE"
             state_entry = time.monotonic()
 
         # ── IK_COMPUTE ────────────────────────────────────────────────────────
-        # Compute pick IK from manual inputs, rotate turntable to pick bearing.
         elif state == "IK_COMPUTE":
             if robot.get_button(Button.BTN_2):
                 robot.stop()
                 robot.shutdown()
                 return
 
-            print(f"[TEST] IK_COMPUTE — rotating turntable to {MALLOW_BEARING_DEG:.1f}°")
+            print(f"[TEST] IK_COMPUTE — rotating turntable to {pick_bearing_deg:.1f}°")
             shoulder_pos, elbow_pos, gripper_pos = _safe_arm_retract(
                 robot, shoulder_pos, elbow_pos, gripper_pos
             )
-            _turntable_to_deg(robot, MALLOW_BEARING_DEG, turntable_home_offset)
+            _turntable_to_deg(robot, pick_bearing_deg, turntable_home_offset)
             time.sleep(0.3)
 
             print(f"[TEST] IK_COMPUTE — target robot-frame: "
                   f"x={pick_x:.0f}  y={pick_y:.0f}  z={pick_z:.0f} mm")
 
-            # ── Inline IK walkthrough (same math as inverse_kinematics()) ───
-            # Step 1: turntable azimuth
-            ik_turntable_deg = math.degrees(math.atan2(pick_y, pick_x))
-
-            # Step 2: effective reach and height from shoulder pivot
             horizontal_dist = math.hypot(pick_x, pick_y)
             reach  = horizontal_dist - ARM_GEOMETRY.shoulder_offset_mm
             height = pick_z - ARM_GEOMETRY.shoulder_height_mm
             d      = math.sqrt(reach ** 2 + height ** 2)
-
-            print(f"[TEST] IK_COMPUTE — ik_turntable={ik_turntable_deg:.1f}°  "
-                  f"reach={reach:.0f} mm  height_from_shoulder={height:.0f} mm  "
-                  f"d={d:.0f} mm  (max={ARM_GEOMETRY.L1+ARM_GEOMETRY.L2:.0f})")
+            print(f"[TEST] IK_COMPUTE — reach={reach:.0f} mm  "
+                  f"height_from_shoulder={height:.0f} mm  d={d:.0f} mm  "
+                  f"(max={ARM_GEOMETRY.L1 + ARM_GEOMETRY.L2:.0f})")
 
             try:
-                # elbow_up=True (default) — combined with ELBOW_SERVO_SIGN=-1
-                # this produces the elbow-at-top, gripper-from-above pose per
-                # MANIPULATOR.md's sign=-1 convention (low elbow servo = forearm
-                # angled up).
                 _, pick_sh, pick_el = inverse_kinematics(
                     pick_x, pick_y, pick_z, ARM_GEOMETRY,
                 )
             except OutOfReachError as exc:
                 print(f"[TEST] IK_COMPUTE — UNREACHABLE: {exc}")
-                print("[TEST] IK_COMPUTE — check MALLOW_DIST_MM / MALLOW_HEIGHT_MM "
-                      "and arm geometry constants.")
                 state = "RESTOW"
                 state_entry = time.monotonic()
             else:
@@ -520,23 +613,16 @@ def run(robot: Robot) -> None:  # noqa: C901
                 ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
             )
             time.sleep(0.5)
-            # Forward-kinematics check — where does the script *think* the gripper
-            # tip is, given the (possibly clipped) commanded servo angles? Compare
-            # with the actual measured position to isolate calibration error vs
-            # safe-limit clipping vs geometry constants.
             fk_x, fk_y, fk_z = forward_kinematics(
-                MALLOW_BEARING_DEG, shoulder_pos, elbow_pos, ARM_GEOMETRY,
+                pick_bearing_deg, shoulder_pos, elbow_pos, ARM_GEOMETRY,
             )
             print(f"[TEST] APPROACHING — commanded servos: "
                   f"shoulder={shoulder_pos:.1f}° (target {arm_shoulder_deg:.1f}°)  "
                   f"elbow={elbow_pos:.1f}° (target {arm_elbow_deg:.1f}°)")
             print(f"[TEST] APPROACHING — FK gripper position: "
                   f"x={fk_x:.0f}  y={fk_y:.0f}  z={fk_z:.0f} mm")
-            print(f"[TEST] APPROACHING — pick target was:      "
-                  f"x={pick_x:.0f}  y={pick_y:.0f}  z={pick_z:.0f} mm")
             print(f"[TEST] APPROACHING — FK − target offset:   "
                   f"dx={fk_x - pick_x:+.0f}  dy={fk_y - pick_y:+.0f}  dz={fk_z - pick_z:+.0f} mm")
-            # Pause with the claw open around the marshmallow before squeezing.
             _hold_grip(robot, GRIPPER_OPEN_DEG, 5.0, "settle (claw around marshmallow)")
             print("[TEST] APPROACHING — at pick position, grabbing.")
             state = "PICKING"
@@ -549,11 +635,10 @@ def run(robot: Robot) -> None:  # noqa: C901
                 robot.shutdown()
                 return
 
-            print(f"[TEST] PICKING — squeezing gripper to {SQUEEZE_DEG:.0f}° ({SQUEEZE_PERCENT:.0f}% grip)")
-            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, SQUEEZE_DEG)
+            print(f"[TEST] PICKING — squeezing gripper to {GRIPPER_CLOSE_DEG:.0f}°")
+            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_CLOSE_DEG)
             time.sleep(0.4)
-            # Hold the squeeze for 5 s.
-            _hold_grip(robot, SQUEEZE_DEG, 5.0, "hold squeeze")
+            _hold_grip(robot, GRIPPER_CLOSE_DEG, 5.0, "hold squeeze")
             print("[TEST] PICKING — gripped.")
             state = "CARRY_TO_PLACE"
             state_entry = time.monotonic()
@@ -570,7 +655,7 @@ def run(robot: Robot) -> None:  # noqa: C901
             shoulder_pos, elbow_pos, gripper_pos = _safe_arm_retract(
                 robot, shoulder_pos, elbow_pos, gripper_pos
             )
-            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, SQUEEZE_DEG)
+            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_CLOSE_DEG)
             _turntable_to_deg(robot, PLACE_TURNTABLE_DEG, turntable_home_offset)
 
             print(f"[TEST] CARRY_TO_PLACE — place robot-frame: "
@@ -608,8 +693,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 ELBOW_SAFE_MIN, ELBOW_SAFE_MAX,
             )
             time.sleep(0.4)
-            # Leave the marshmallow in place (still gripped) for 5 s before dropping.
-            _hold_grip(robot, SQUEEZE_DEG, 5.0, "dwell at place location")
+            _hold_grip(robot, GRIPPER_CLOSE_DEG, 5.0, "dwell at place location")
             gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_OPEN_DEG)
             time.sleep(0.3)
             print("[TEST] PLACING — released.  PASS")
@@ -658,7 +742,7 @@ def main() -> None:
     from rclpy.signals import SignalHandlerOptions
 
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-    node = Node("manual_ik_pick_place")
+    node = Node("hardcoded_cup_pick_place")
     robot = Robot(node)
 
     def _spin() -> None:

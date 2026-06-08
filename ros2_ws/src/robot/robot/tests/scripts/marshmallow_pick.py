@@ -142,6 +142,14 @@ S = SimpleNamespace(
     grab=False,        # go straight to the search pose and grab (no ultrasonic descent)
     grip=GRIPPER_GRAB_DEG,  # gripper close angle for the grab (higher = tighter)
     hold_s=120.0,      # after a --grab, keep re-commanding the grip for this long
+    # ── timed pick-and-place (--place) ──
+    place=False,            # run the full timed pick→squeeze→transport→drop sequence
+    place_turntable=90.0,   # drop-location turntable angle (deg)
+    place_shoulder=ARM_SEARCH_SHOULDER_DEG,  # drop-location shoulder (default = pick pose)
+    place_elbow=ARM_SEARCH_ELBOW_DEG,        # drop-location elbow    (default = pick pose)
+    squeeze=GRIPPER_CLOSE_DEG,  # "as tight as possible" close angle (hard close = 120)
+    settle_s=5.0,           # pause with claw open around the marshmallow before squeezing
+    place_dwell_s=5.0,      # leave it at the drop location before releasing
 )
 
 
@@ -178,6 +186,21 @@ def _turntable_to_deg(robot: Robot, target_deg: float) -> bool:
         TURNTABLE_STEPPER, steps, StepMoveType.ABSOLUTE,
         blocking=True, timeout=STEPPER_MOVE_TIMEOUT_S,
     )
+
+
+def _hold_grip(robot: Robot, angle: float, seconds: float, label: str = "hold") -> None:
+    """Wait `seconds` while actively re-asserting the gripper at `angle`.
+
+    The firmware relaxes actuators when the host goes quiet, so a plain sleep
+    would let the grip drift. Re-commanding (and re-enabling) every ~0.4 s keeps
+    the jaw exactly where we want it through every timed pause.
+    """
+    print(f"[PLACE] {label}: holding gripper at {angle:.0f}° for {seconds:.0f}s")
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        robot.enable_servo(GRIPPER_CHANNEL)
+        robot.set_servo(GRIPPER_CHANNEL, angle)
+        time.sleep(0.4)
 
 
 def run(robot: Robot) -> None:  # noqa: C901 — the pipeline is intentionally linear
@@ -247,9 +270,9 @@ def run(robot: Robot) -> None:  # noqa: C901 — the pipeline is intentionally l
                 print("[PICK] FAIL: vision not active within timeout. Is vision_node publishing /vision/detections?")
                 return
 
-        # The ultrasonic descent needs the sensor; --grab goes to a known pose and
-        # closes without it, so skip the requirement in that mode.
-        if not S.grab:
+        # The ultrasonic descent needs the sensor; --grab/--place go to a known
+        # pose and close without it, so skip the requirement in those modes.
+        if not (S.grab or S.place):
             us_deadline = time.monotonic() + ULTRASONIC_WAIT_S
             while time.monotonic() < us_deadline:
                 if robot.is_ultrasonic_active(timeout_s=0.5):
@@ -406,6 +429,40 @@ def run(robot: Robot) -> None:  # noqa: C901 — the pipeline is intentionally l
         print(f"[PICK] Opening gripper → {GRIPPER_OPEN_DEG}°")
         gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_OPEN_DEG, 0.0, 180.0)
 
+        # ── PLACE MODE: timed pick → squeeze → transport → drop ──────────────
+        if S.place:
+            # Step 3: pause with the claw open around the marshmallow.
+            _hold_grip(robot, GRIPPER_OPEN_DEG, S.settle_s, label="settle (claw around marshmallow)")
+            # Step 4: squeeze as tight as possible.
+            print(f"[PLACE] Squeezing gripper → {S.squeeze:.0f}° (as tight as possible).")
+            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, S.squeeze, 0.0, 180.0)
+            # Step 5: hold the squeeze.
+            _hold_grip(robot, S.squeeze, S.hold_s, label="hold squeeze")
+            # Step 6: transport to the drop location (lift clear, rotate, lower).
+            print(f"[PLACE] Lifting to carry before transport "
+                  f"(elbow={ARM_CARRY_ELBOW_DEG}°, shoulder={ARM_CARRY_SHOULDER_DEG}°).")
+            elbow_pos = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, ARM_CARRY_ELBOW_DEG,
+                                    ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
+            shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, ARM_CARRY_SHOULDER_DEG,
+                                       SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
+            robot.set_servo(GRIPPER_CHANNEL, S.squeeze)  # keep clamped while carrying
+            print(f"[PLACE] Rotating turntable → {S.place_turntable:+.1f}° (drop location).")
+            _turntable_to_deg(robot, S.place_turntable)
+            robot.set_servo(GRIPPER_CHANNEL, S.squeeze)
+            print(f"[PLACE] Lowering to place pose: shoulder={S.place_shoulder}° elbow={S.place_elbow}°")
+            shoulder_pos = _move_servo(robot, SHOULDER_CHANNEL, shoulder_pos, S.place_shoulder,
+                                       SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX)
+            elbow_pos = _move_servo(robot, ELBOW_CHANNEL, elbow_pos, S.place_elbow,
+                                    ELBOW_SAFE_MIN, ELBOW_SAFE_MAX)
+            # Step 7: leave it in place, still gripped.
+            _hold_grip(robot, S.squeeze, S.place_dwell_s, label="dwell at drop location")
+            # Step 8: drop it.
+            print(f"[PLACE] Releasing gripper → {GRIPPER_OPEN_DEG}° (drop).")
+            gripper_pos = _move_servo(robot, GRIPPER_CHANNEL, gripper_pos, GRIPPER_OPEN_DEG, 0.0, 180.0)
+            time.sleep(0.5)
+            print("[PLACE] Sequence complete — marshmallow dropped at the place location.")
+            return
+
         # ── GRAB MODE: jaws are already around the target at this pose; close ──
         if S.grab:
             time.sleep(0.4)
@@ -539,7 +596,24 @@ def _parse_args(argv=None):
                    help="Gripper close angle for the grab (deg; higher = tighter hold).")
     p.add_argument("--hold-s", type=float, default=120.0,
                    help="After --grab, keep the process alive and re-command the grip "
-                        "for this many seconds so it stays closed (0 = exit immediately).")
+                        "for this many seconds so it stays closed (0 = exit immediately). "
+                        "In --place this is the hold-after-squeeze duration.")
+    # ── timed pick-and-place ──
+    p.add_argument("--place", action="store_true",
+                   help="Full timed sequence: approach → 5s settle → squeeze tight → 5s hold "
+                        "→ transport to drop location → 5s dwell → drop. No ultrasonic.")
+    p.add_argument("--place-turntable", type=float, default=90.0,
+                   help="Drop-location turntable angle (deg).")
+    p.add_argument("--place-shoulder", type=float, default=ARM_SEARCH_SHOULDER_DEG,
+                   help="Drop-location shoulder angle (deg). Default = pick shoulder.")
+    p.add_argument("--place-elbow", type=float, default=ARM_SEARCH_ELBOW_DEG,
+                   help="Drop-location elbow angle (deg). Default = pick elbow.")
+    p.add_argument("--squeeze", type=float, default=GRIPPER_CLOSE_DEG,
+                   help="'As tight as possible' close angle for --place (deg; default 120 = hard close).")
+    p.add_argument("--settle-s", type=float, default=5.0,
+                   help="--place: seconds to pause with the claw open around the marshmallow.")
+    p.add_argument("--place-dwell-s", type=float, default=5.0,
+                   help="--place: seconds to leave the marshmallow at the drop location before releasing.")
     return p.parse_args(argv)
 
 
@@ -568,6 +642,13 @@ def main() -> None:
     S.grab = args.grab
     S.grip = args.grip
     S.hold_s = args.hold_s
+    S.place = args.place
+    S.place_turntable = args.place_turntable
+    S.place_shoulder = args.place_shoulder
+    S.place_elbow = args.place_elbow
+    S.squeeze = args.squeeze
+    S.settle_s = args.settle_s
+    S.place_dwell_s = args.place_dwell_s
 
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node("marshmallow_pick")
