@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1    # 1–4: segment to begin from; 1 = full course from start
-AUTO_START    = True
+AUTO_START    = False
 
   # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,9 +91,9 @@ SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
 SEG2_CFG  = dict(speed=130, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
 SEG3B_CFG = dict(
-    speed=75, lookahead=120, spacing=400,
-    safe_dist=180, lane_width=451, avoidance_delay=245,
-    obstacles_range=500, view_angle=70.0, alpha_Ld=0.70, offset=324,
+    speed=75, lookahead=140, spacing=400,
+    safe_dist=190, lane_width=451, avoidance_delay=245,
+    obstacles_range=570, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
 SEG4_CFG  = dict(speed=120, lookahead=100, spacing=50)
@@ -485,19 +485,33 @@ def run(robot: Robot) -> None:  # noqa: C901
                 abs_x, abs_y = px + ox, py + oy
                 if seg3_phase == "approach":
                     print(f"[FSM] SEG3 approach done at abs=({abs_x:.0f},{abs_y:.0f}) "
-                          f"θ={math.degrees(pth):.1f}° — entering obstacle zone "
+                          f"θ={pth:.1f}° — entering obstacle zone "
                           f"(goal y={Y_TOP - OBS_EXIT_OFFSET_MM:.0f}, "
                           f"wall y={Y_TOP:.0f}, buffer={OBS_EXIT_OFFSET_MM:.0f} mm).")
                     _load_path(robot, _op(SEG3_OBS_PATH), SEG3B_CFG, obstacle_avoidance=True, x_L=x_L_obs)
                     seg3_phase = "obstacle"
                 elif seg3_phase == "obstacle":
+                    # pth is already degrees (see navigation.get_odometry_pose).
                     print(f"[FSM] SEG3 obstacle zone done at abs=({abs_x:.0f},{abs_y:.0f}) "
-                          f"θ={math.degrees(pth):.1f}° — proceeding to exit turn.")
+                          f"θ={pth:.1f}° (expected 90°) — pausing 3 s for manual adjust.")
+                    robot.stop()
+                    # Blink red+orange so the pause is unmistakable on the rover.
+                    for _ in range(3):
+                        robot.set_led(LED.RED, 255)
+                        robot.set_led(LED.ORANGE, 255)
+                        robot.set_led(LED.GREEN, 0)
+                        time.sleep(0.5)
+                        robot.set_led(LED.RED, 0)
+                        robot.set_led(LED.ORANGE, 0)
+                        time.sleep(0.5)
+                    robot.set_led(LED.GREEN, 255)
+                    px2, py2, pth2 = robot.get_odometry_pose()
+                    print(f"[FSM] Resuming SEG3 exit at abs=({px2+ox:.0f},{py2+oy:.0f}) θ={pth2:.1f}°.")
                     _load_path(robot, _op(SEG3_EXIT_PATH), SEG3C_CFG, obstacle_avoidance=False)
                     seg3_phase = "exit"
                 elif seg3_phase == "exit":
                     print(f"[FSM] SEG3 complete — CP3 reached at abs=({abs_x:.0f},{abs_y:.0f}) "
-                          f"θ={math.degrees(pth):.1f}°.")
+                          f"θ={pth:.1f}°.")
                     _load_path(robot, _op(SEG4_EAST_PATH), SEG4_CFG, obstacle_avoidance=False)
                     seg4_leg = "east"
                     state = "SEG4"

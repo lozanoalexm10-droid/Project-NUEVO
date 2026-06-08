@@ -559,6 +559,8 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             lane_width: float=500.0,
             alpha_Ld: float=0.8,
             obstacle_avoidance: bool = True,
+            robot_half_width_mm: float=200.0,
+            cone_radius_mm: float=75.0,
             ):
         self.Ld = lookahead_distance
         self.raw_LD = lookahead_distance
@@ -573,6 +575,14 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
         self.x_L = x_L
         self.lane_width = lane_width
         self.offset = offset
+        # Body geometry: needed_offset historically used safe_dist as if both
+        # the robot and the cone were points. The lidar's closest_pt is on the
+        # cone's near surface (radius already accounted for), so safe_dist is
+        # converted to real edge-to-edge clearance by adding half_width only.
+        # cone_radius_mm is retained for callers that want a margin against
+        # detector noise / centroid-style detections.
+        self.robot_half_width = float(robot_half_width_mm)
+        self.cone_radius = float(cone_radius_mm)
 
         self.avoidance_active = False
         self.avoidance_counter = 0
@@ -686,12 +696,31 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
                 # Compute required lateral shift so the detour path clears the cone
                 # by exactly safe_dist, regardless of which side the robot is on.
                 # Target clearance point is always on the far side of the cone from center.
+                # Clearance target is body-edge to cone-edge = safe_dist.
+                # Robot-center to cone-surface target = safe_dist + half_width.
+                # Cone surface (closest_pt) was the closest lidar return, so
+                # the cone's far edge is already accounted for — we only add
+                # half_width to convert center→edge for the robot.
+                clearance_target = self.safe_dist + self.robot_half_width
                 if closest_pt[0] < self.x_L:
-                    # Cone is left of centre → detour right, past cone_x + safe_dist
-                    needed_offset = max((closest_pt[0] + self.safe_dist) - x, 0.0)
+                    # Cone is left of centre → detour right, past cone_x + clearance
+                    needed_offset = max((closest_pt[0] + clearance_target) - x, 0.0)
                 else:
-                    # Cone is right of centre → detour left, past cone_x - safe_dist
-                    needed_offset = max(x - (closest_pt[0] - self.safe_dist), 0.0)
+                    # Cone is right of centre → detour left, past cone_x - clearance
+                    needed_offset = max(x - (closest_pt[0] - clearance_target), 0.0)
+
+                # Lane corridor cap. Without this, alternating cones force the
+                # planner to swing the robot from one lane edge to the other
+                # because each cone's clearance demand exceeds what the lane
+                # geometry can give. Cap the *destination* (x + dx) to stay
+                # inside x_L ± (lane_width - half_width).
+                lane_half_corridor = max(0.0, self.lane_width - self.robot_half_width)
+                if closest_pt[0] < self.x_L:
+                    dest_max = self.x_L + lane_half_corridor
+                    needed_offset = min(needed_offset, max(0.0, dest_max - x))
+                else:
+                    dest_min = self.x_L - lane_half_corridor
+                    needed_offset = min(needed_offset, max(0.0, x - dest_min))
 
                 change_lane = False
                 if needed_offset > 10.0 and (

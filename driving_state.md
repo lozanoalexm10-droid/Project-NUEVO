@@ -4,7 +4,7 @@
 > current state of autonomous driving — what works, what's untested, and what to
 > do next. Read top-to-bottom, then jump to **Quick Start**.
 
-**Last updated:** 2026-06-03.
+**Last updated:** 2026-06-08.
 **Script:** `ros2_ws/src/robot/robot/tests/scripts/venue_full_course_test.py`
 **Branch:** `tests-todd`
 
@@ -14,12 +14,13 @@
 
 | Segment | Route | Status |
 |---|---|---|
-| SEG1 | Start → CP1 (lane 1 north, first half top-left U-turn) | ✅ Working reliably |
-| SEG2 | CP1 → CP2 (complete U-turn, lane 2 south, bottom turn) | ✅ Working reliably |
+| SEG1 | Start → CP1 (lane 1 north, first half top-left U-turn) | ✅ Almost always works perfectly |
+| SEG2 | CP1 → CP2 (complete U-turn, lane 2 south, bottom turn) | ✅ Almost always works perfectly |
+| Traffic light | IDLE green-light detection (AUTO_START=False) | ✅ Almost always works perfectly |
 | SEG3A | CP2 east → obstacle zone entry (avoidance OFF) | ✅ Working reliably |
-| SEG3B | North through obstacle field (avoidance ON) | ⚠️ Sometimes works — obstacle avoidance is the weak link |
-| SEG3C | Exit obstacle zone → 90° right turn east → CP3 | 🔴 Untested (lidar pose reset just added) |
-| SEG4 | CP3 → lane 5 south → stop sign → manipulation station | 🔴 Untested end-to-end (depends on SEG3C landing correctly) |
+| SEG3B | North through obstacle field (avoidance ON) | ⚠️ Generally works — cones cleared, but large heading error builds up during avoidance and is not yet resolved |
+| SEG3C | Exit obstacle zone → 90° right turn east → CP3 | ⚠️ Fails when SEG3B's heading error carries in — rover drifts into the west wall on the exit straight |
+| SEG4 | CP3 → lane 5 south → stop sign → manipulation station | 🔴 Speed-bump handling and the correct stop location for the stop sign are still undecided |
 
 ---
 
@@ -111,8 +112,11 @@ The robot drives north through the obstacle field (~x=1525, y=1010→3100) with 
 **Known failure modes:**
 - Robot gets trapped between two close obstacles and oscillates
 - Avoidance impulse carries the robot too far left/right, missing the exit corridor
-- Odometry heading drifts significantly during avoidance maneuvers (the core
-  motivation for the SEG3C lidar reset below)
+- **Heading error accumulates across the hat-shape detours** — the hat shape
+  should net to zero rotation, but in practice the rover finishes SEG3B pointed
+  30–50° west of north even when the lateral position lands close to the goal.
+  This is the dominant SEG3B failure mode right now and is **not yet resolved**.
+  It also breaks SEG3C (rover drifts into the west wall on the exit straight).
 
 **Tuning knobs** (`SEG3B_CFG` in the script):
 ```python
@@ -164,8 +168,16 @@ SEG3B_CFG = dict(speed=90, lookahead=100, spacing=400,
 - First detection → 3-second dwell (red LED), then resume
 - Final waypoint: (2440, 305) — manipulation station
 
-SEG4 has never been reached in a full run because SEG3C is untested. When testing
-SEG4 in isolation (`START_SEGMENT = 4`), place the robot at CP3 (1983, 3660) facing east.
+**Open decisions for SEG4 (not yet resolved):**
+- **Speed-bump handling.** Lane 5 has ~155 mm bumps placed randomly so single
+  tires strike them. Whether to slow down for the whole bump zone, time the
+  approach to hit them centered, or just drive at normal pace is undecided.
+- **Stop-sign stop location.** The "correct" distance/position at which to dwell
+  in front of the stop sign for the 3-second hold is not yet pinned down — needs
+  a venue measurement and a vision-distance threshold to match.
+
+When testing SEG4 in isolation (`START_SEGMENT = 4`), place the robot at CP3
+(1983, 3660) facing east.
 
 ---
 
