@@ -90,11 +90,21 @@ STOP_SIGN_MIN_CONF = 0.50
 SEG1_CFG  = dict(speed=140, lookahead=300, spacing=50)
 SEG2_CFG  = dict(speed=130, lookahead=300, spacing=50)
 SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
+# SEG3B tuning — current (2026-06-09): bumped lookahead/safe_dist/alpha_Ld for
+# smoother detours, plus depends on the new goal-y obstacle filter in
+# path_planner so SEG3B can extend up to OBS_EXIT_OFFSET_MM=400 without the
+# north wall triggering avoidance. Revert by swapping with the commented block
+# below if behavior regresses on the real course.
 SEG3B_CFG = dict(
-    speed=75, lookahead=140, spacing=400,
-    safe_dist=190, lane_width=451, avoidance_delay=245,
-    obstacles_range=570, view_angle=70.0, alpha_Ld=0.70, offset=324,
+    speed=75, lookahead=290, spacing=400,
+    safe_dist=230, lane_width=451, avoidance_delay=245,
+    obstacles_range=570, view_angle=70.0, alpha_Ld=0.90, offset=324,
 )
+# SEG3B_CFG = dict(   # previous tuning (pre-2026-06-09)
+#     speed=75, lookahead=140, spacing=400,
+#     safe_dist=190, lane_width=451, avoidance_delay=245,
+#     obstacles_range=570, view_angle=70.0, alpha_Ld=0.70, offset=324,
+# )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
 SEG4_CFG  = dict(speed=120, lookahead=100, spacing=50)
 
@@ -150,12 +160,17 @@ OBS_ENTRY_OFFSET_MM = 400.0  # SEG3A drives the robot this far north of the
                              # it time to finish the 90° turn and settle on the
                              # centerline pointing north before any cones are
                              # considered.
-OBS_EXIT_OFFSET_MM  = 900.0  # Goal must sit OUTSIDE obstacles_range (=450 in SEG3B_CFG)
-                             # so the planner doesn't see the north wall as an obstacle
-                             # and detour into a 180 right before exiting the zone.
-                             # Bumped from 600 → 900 after the planner kept running
-                             # avoidance past the last obstacle and did a U-turn instead
-                             # of letting SEG3C drive a clean straight to the top corner.
+OBS_EXIT_OFFSET_MM  = 400.0  # Distance from north wall at which SEG3B's avoidance
+                             # phase ends. Was 900 to keep the wall out of
+                             # obstacles_range, but path_planner.gen_obstacle_waypoint
+                             # now filters obstacles past goal_y, so the wall can
+                             # never trigger avoidance regardless of this offset.
+                             # 400 keeps SEG3B's reach (goal at y=3100) north of any
+                             # real cone the course can place inside the obstacle zone.
+                             # Revert to 900 (with the previous SEG3B_CFG block) if
+                             # the goal-y filter misbehaves on the real course:
+# OBS_EXIT_OFFSET_MM  = 900.0  # previous value — kept wall out of obstacles_range
+                               # by ending SEG3B 900mm short of the north wall.
 
 # Segment 3: three internal sub-paths with different avoidance settings.
 #   3a (avoidance OFF): CP2 east → corner → OBS_ENTRY_OFFSET_MM north.

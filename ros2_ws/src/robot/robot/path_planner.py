@@ -676,6 +676,17 @@ class PurePursuitPlannerWithAvoidance(PathPlanner):
             obstacles_r = obstacles_r[np.abs(obstacles[:,0]-self.x_L)<self.lane_width,:]
             obstacles = obstacles[np.abs(obstacles[:,0]-self.x_L)<self.lane_width,:]
 
+            # Goal-y filter: ignore anything past the final goal. The north wall
+            # and any cone placed beyond the goal would otherwise trigger a
+            # detour into them (the failure mode that originally forced
+            # OBS_EXIT_OFFSET_MM up to 900). With this filter, SEG3B can extend
+            # right up to the wall without the wall ever counting as an obstacle.
+            if len(self.raw_path) > 0:
+                goal_y = self.raw_path[-1][1]
+                keep = obstacles[:, 1] <= goal_y + self.safe_dist
+                obstacles_r = obstacles_r[keep]
+                obstacles   = obstacles[keep]
+
             # Modify path waypoints that are too close to the obstacles to prevent the robot from trying to track those waypoints and colliding with the obstacles.
             # Guard: need at least 2 waypoints or the midpoint merge crashes on remaining_path[1].
             if len(self.remaining_path) >= 2 and \
