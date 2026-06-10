@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1    # 1–4: segment to begin from; 1 = full course from start
-AUTO_START    = False
+AUTO_START    = True
 
   # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
 SEG3B_CFG = dict(
     speed=75, lookahead=290, spacing=400,
     safe_dist=230, lane_width=451, avoidance_delay=245,
-    obstacles_range=570, view_angle=70.0, alpha_Ld=0.90, offset=324,
+    obstacles_range=570, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 # SEG3B_CFG = dict(   # previous tuning (pre-2026-06-09)
 #     speed=75, lookahead=140, spacing=400,
@@ -106,7 +106,14 @@ SEG3B_CFG = dict(
 #     obstacles_range=570, view_angle=70.0, alpha_Ld=0.70, offset=324,
 # )
 SEG3C_CFG = dict(speed=120, lookahead=300, spacing=50)
-SEG4_CFG  = dict(speed=120, lookahead=100, spacing=50)
+# SEG4 retuned 2026-06-10 to mirror SEG2's settings so the east→south corner
+# behaves like SEG2's first right turn (smooth through the corner instead of
+# stop-and-restart). Pairs with the merged SEG4_PATH below — the previous
+# split SEG4_EAST + SEG4_SOUTH used lookahead=100 to dodge an "anticipation"
+# velocity collapse, but the split forced a stop at the corner that left the
+# robot facing east with a target due south, which is what was tweaking out.
+SEG4_CFG  = dict(speed=130, lookahead=300, spacing=50)
+# SEG4_CFG  = dict(speed=120, lookahead=100, spacing=50)  # previous split-path tuning
 
 # ── Course geometry (mm, absolute odometry frame, x=east y=north) ─────────────
 X_LANE1   =    0.0    # lane 1 centre (robot start x)
@@ -129,6 +136,15 @@ CP1 = (  305.0, 3660.0)
 CP2 = ( 1067.5,  460.0)
 CP3 = ( 1982.5, 3660.0)
 
+# Wall standoff for the perimeter 90° corners. The corner waypoints used to sit
+# on Y_TOP / X_LANE5 / Y_BOT, but pure-pursuit overshoot during the right-hand
+# turns drove the robot into the walls. Pull each corner inward so the overshoot
+# stays inside the course. Defined here (above the SEG_PATH lists) because the
+# path definitions reference these constants.
+TOP_WALL_MARGIN_MM    = 200.0  # corner y = Y_TOP - this (SEG3C north→east, SEG4 east→south)
+EAST_WALL_MARGIN_MM   = 200.0  # SEG4 east corner x = X_LANE5 - this
+BOTTOM_WALL_MARGIN_MM =  20.0  # bottom-row corner y = Y_BOT + this (SEG2 south→east, SEG3A east→north, CP2)
+
 # ── Segment waypoints ─────────────────────────────────────────────────────────
 # All coordinates are expressed relative to the segment's own start point
 # (= 0, 0 after odometry reset at start / checkpoint).
@@ -148,8 +164,8 @@ SEG1_PATH = [
 SEG2_PATH = [
     (X_LANE1 + 305.0, Y_TOP),  # CP1
     (X_LANE2 + 20.0, Y_TOP),           # 90° right-turn corner (now south)
-    (X_LANE2 + 20.0, Y_BOT),           # 90° right-turn corner (now east)
-    (X_LANE2 + 457.5, Y_BOT),  # CP2: 457.5 mm east of corner  = (1067.5, 610)
+    (X_LANE2 + 20.0, Y_BOT + BOTTOM_WALL_MARGIN_MM),           # 90° right-turn corner (now east), pulled north of bottom wall
+    (X_LANE2 + 457.5, Y_BOT + BOTTOM_WALL_MARGIN_MM),  # CP2 (margin-inset)
 ]
 
 # Obstacle-zone avoidance entry/exit offsets — how far inside the obstacle
@@ -177,8 +193,8 @@ OBS_EXIT_OFFSET_MM  = 400.0  # Distance from north wall at which SEG3B's avoidan
 #   The approach carries the robot through the full 90° left turn without
 #   avoidance so the planner doesn't fight the turn.
 SEG3_APPROACH_PATH = [
-    (X_LANE2 + 457.5, Y_BOT),              # CP2
-    (X_OBS_MID, Y_BOT),                    # corner (east → north)
+    (X_LANE2 + 457.5, Y_BOT + BOTTOM_WALL_MARGIN_MM),              # CP2 (matches SEG2 end)
+    (X_OBS_MID, Y_BOT + BOTTOM_WALL_MARGIN_MM),                    # corner (east → north), pulled north of bottom wall
     (X_OBS_MID, Y_BOT + OBS_ENTRY_OFFSET_MM),  # robot heading north, safe to start avoidance
 ]
 #   3b (avoidance ON): straight-line north through the obstacle field.
@@ -191,33 +207,38 @@ SEG3_OBS_PATH = [
 #   3c (avoidance OFF): finish north run → 90° right turn → east to CP3.
 SEG3_EXIT_PATH = [
     (X_OBS_MID, Y_TOP - OBS_EXIT_OFFSET_MM),
-    (X_OBS_MID, Y_TOP),                    # corner (north → east)
-    (X_OBS_MID + 457.5, Y_TOP),            # CP3: 457.5 mm east of corner = (1982.5, 3660)
+    (X_OBS_MID, Y_TOP - TOP_WALL_MARGIN_MM),                    # corner (north → east), pulled south of wall
+    (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM),            # CP3 (1982.5, Y_TOP - margin)
 ]
 
 # Segment 4: CP3 → corner → lane 5 south → manipulation station.
 #   Stop-sign detection active throughout. 3-second dwell on first detection.
-#   Single config/speed — bumps are small enough to drive over at normal pace.
-#   Path is loaded in two sub-legs internally (east to corner, then south to
-#   finish) so PP can't anticipate the 90° turn from a cold-start standalone
-#   run — anticipating it collapses linear velocity below the motor stiction
-#   floor and the robot jitters in place.
-SEG4_EAST_PATH = [
-    (X_OBS_MID + 457.5, Y_TOP),  # CP3
-    (X_LANE5, Y_TOP),            # 90° right-turn corner
+#   Loaded as ONE continuous path (like SEG2's right-then-right run) so the
+#   robot keeps moving through the east→south corner instead of stopping at
+#   it — pure pursuit's lookahead pulls in south-leg waypoints during the
+#   east approach, curving the robot smoothly around the corner.
+SEG4_PATH = [
+    (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM),                  # CP3 (matches SEG3C end)
+    (X_LANE5 - EAST_WALL_MARGIN_MM, Y_TOP - TOP_WALL_MARGIN_MM),      # 90° right-turn corner, pulled west+south of walls
+    (FINISH_X, FINISH_Y),                                             # manipulation station (robot drifts east to lane 5 centerline as it heads south)
 ]
-SEG4_SOUTH_PATH = [
-    (X_LANE5, Y_TOP),            # corner
-    (FINISH_X, FINISH_Y),        # manipulation station
-]
+# Previous split-path layout (kept for reference / quick revert):
+# SEG4_EAST_PATH = [
+#     (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM),
+#     (X_LANE5 - EAST_WALL_MARGIN_MM, Y_TOP - TOP_WALL_MARGIN_MM),
+# ]
+# SEG4_SOUTH_PATH = [
+#     (X_LANE5 - EAST_WALL_MARGIN_MM, Y_TOP - TOP_WALL_MARGIN_MM),
+#     (FINISH_X, FINISH_Y),
+# ]
 
 # Per-segment start: (course_x_mm, course_y_mm, heading_deg)
 # heading_deg follows math convention: east=0°, north=90°
 _SEG_START = {
     1: (X_LANE1,           Y_START, 90.0),   # lane 1, facing north
     2: (X_LANE1 + 305.0,   Y_TOP,    0.0),   # CP1, facing east
-    3: (X_LANE2 + 457.5,   Y_BOT,    0.0),   # CP2, facing east
-    4: (X_OBS_MID + 457.5, Y_TOP,    0.0),   # CP3, facing east
+    3: (X_LANE2 + 457.5,   Y_BOT + BOTTOM_WALL_MARGIN_MM, 0.0),   # CP2 (margin-inset), facing east
+    4: (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM, 0.0),   # CP3 (margin-inset), facing east
 }
 
 
@@ -343,7 +364,7 @@ def run(robot: Robot) -> None:  # noqa: C901
     elif START_SEGMENT == 3:
         _load_path(robot, _op(SEG3_APPROACH_PATH), SEG3A_CFG, obstacle_avoidance=False)
     elif START_SEGMENT == 4:
-        _load_path(robot, _op(SEG4_EAST_PATH), SEG4_CFG, obstacle_avoidance=False)
+        _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
 
     if not AUTO_START:
         # Stepper API is fire-and-forget (publishes ROS msgs, no ack), so the
@@ -382,7 +403,6 @@ def run(robot: Robot) -> None:  # noqa: C901
                                    # was queuing set_velocity commands and stalling the
                                    # first move after green-light detection.
     seg3_phase: str = "approach"   # 'approach' | 'obstacle' | 'exit'
-    seg4_leg:   str = "east"       # 'east' (to corner) | 'south' (to finish)
     stop_sign_seen:    bool  = False
     stop_sign_pause_t: float = 0.0
     idle_last_debug_t: float = 0.0   # rate-limit IDLE vision debug print
@@ -527,8 +547,7 @@ def run(robot: Robot) -> None:  # noqa: C901
                 elif seg3_phase == "exit":
                     print(f"[FSM] SEG3 complete — CP3 reached at abs=({abs_x:.0f},{abs_y:.0f}) "
                           f"θ={pth:.1f}°.")
-                    _load_path(robot, _op(SEG4_EAST_PATH), SEG4_CFG, obstacle_avoidance=False)
-                    seg4_leg = "east"
+                    _load_path(robot, _op(SEG4_PATH), SEG4_CFG, obstacle_avoidance=False)
                     state = "SEG4"
 
         # ── SEG4: CP3 → corner → lane 5 south → Finish (single path) ──────────
@@ -578,15 +597,9 @@ def run(robot: Robot) -> None:  # noqa: C901
                     robot.set_led(LED.GREEN, 255)
                     robot.set_led(LED.ORANGE, 0)
                     if robot._nav_follow_pp_path_loop() == "IDLE":
-                        if seg4_leg == "east":
-                            print("[FSM] SEG4 east leg done — loading south leg.")
-                            _load_path(robot, _op(SEG4_SOUTH_PATH), SEG4_CFG,
-                                       obstacle_avoidance=False)
-                            seg4_leg = "south"
-                        else:
-                            print("[FSM] SEG4 complete — at manipulation station.")
-                            robot.stop()
-                            state = "DONE"
+                        print("[FSM] SEG4 complete — at manipulation station.")
+                        robot.stop()
+                        state = "DONE"
 
             else:
                 # Normal driving toward finish

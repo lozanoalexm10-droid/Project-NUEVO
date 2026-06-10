@@ -2,13 +2,13 @@
 
 # ── Venue / full-course runs ──────────────────────────────────────────────────
 #from robot.tests.scripts.venue_no_obstacles_test import run  # noqa: F401
-#from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
+from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
 #from robot.tests.scripts.seg4_standalone_test import run  # noqa: F401
 
 # ── Pick-and-place / manipulator ──────────────────────────────────────────────
 #from robot.tests.scripts.turntable_home_test import run  # noqa: F401
 #from robot.tests.scripts.turntable_pick_place_test import run  # noqa: F401
-from robot.tests.scripts.hardcoded_cup_pick_place_test import run  # noqa: F401
+#from robot.tests.scripts.hardcoded_cup_pick_place_test import run  # noqa: F401
 #from robot.tests.scripts.manual_ik_pick_place_test import run  # noqa: F401
 #from robot.tests.scripts.lidar_cup_pick_place_test import run  # noqa: F401
 
