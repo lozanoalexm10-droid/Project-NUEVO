@@ -1,16 +1,23 @@
-#from robot.tests.scripts.turntable_home_test import run  # noqa: F401
+# Uncomment exactly one import below to select the active test script.
+
+# ── Venue / full-course runs ──────────────────────────────────────────────────
 #from robot.tests.scripts.venue_no_obstacles_test import run  # noqa: F401
-#from robot.tests.scripts.turntable_pick_place_test import run  # noqa: F401
-#from robot.tests.scripts.servo_range_test import run  # noqa: F401
+#from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
+#from robot.tests.scripts.seg4_standalone_test import run  # noqa: F401
+
+# ── Pick-and-place / manipulator ──────────────────────────────────────────────
 #from robot.tests.scripts.turntable_home_test import run  # noqa: F401
-#from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
-#from robot.tests.scripts.campan_detect_ik_test import run  # noqa: F401
 #from robot.tests.scripts.turntable_pick_place_test import run  # noqa: F401
-#from robot.tests.scripts.venue_full_course_test import run  # noqa: F401
 from robot.tests.scripts.hardcoded_cup_pick_place_test import run  # noqa: F401
-#from robot.tests.scripts.green_light_detect_test import run  # noqa: F401
 #from robot.tests.scripts.manual_ik_pick_place_test import run  # noqa: F401
-#from robot.tests.scripts.elbow_calibration_test import run  # noqa: F401
-#from robot.tests.scripts.lidar_snapshot_test import run  # noqa: F401
 #from robot.tests.scripts.lidar_cup_pick_place_test import run  # noqa: F401
+
+# ── Calibration / range tests ─────────────────────────────────────────────────
+#from robot.tests.scripts.servo_range_test import run  # noqa: F401
+#from robot.tests.scripts.elbow_calibration_test import run  # noqa: F401
+#from robot.tests.scripts.campan_detect_ik_test import run  # noqa: F401
+
+# ── Vision / detection / lidar ────────────────────────────────────────────────
+#from robot.tests.scripts.green_light_detect_test import run  # noqa: F401
+#from robot.tests.scripts.lidar_snapshot_test import run  # noqa: F401
 #from robot.tests.scripts.mallow_detection_range_test import run  # noqa: F401

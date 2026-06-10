@@ -67,7 +67,6 @@ from robot.tests.scripts._manipulator_config import (
     GRIPPER_CHANNEL,
     GRIPPER_CLOSE_DEG,
     GRIPPER_OPEN_DEG,
-    MALLOW_CUP_BEARING_MATCH_DEG,
     MALLOW_Z_STACK_9_MM,
     MALLOW_Z_STACK_11_MM,
     MALLOW_Z_STACK_14_MM,
@@ -158,6 +157,13 @@ TURNTABLE_HOME_OFFSET_MEASURED_DEG = TURNTABLE_HOME_OFFSET_DEG
 # axis — using the lens offset here would bias every aim angle.
 CAMPAN_OFFSET_FROM_CAMERA_MM = 30.0     # lens is 30 mm ahead of the campan pivot
 CAMPAN_FORWARD_OFFSET_MM     = CAMERA_FORWARD_OFFSET_MM - CAMPAN_OFFSET_FROM_CAMERA_MM  # ≈ 178.5 mm
+
+# Scan-time "near center" filter — tighter than the global
+# MALLOW_CUP_BEARING_MATCH_DEG (10°) so adjacent stacks can't bleed into each
+# other's scan window. The four hardcoded cups are roughly 15–25° apart in
+# bearing, so ±4° keeps detections solidly inside the central ~13% of the
+# 62° HFOV frame and rejects the same mallow showing up in two pans.
+SCAN_CENTER_TOLERANCE_DEG = 4.0
 
 
 # ── Servo / motion helpers (mirror manual_ik_pick_place_test.py exactly) ──────
@@ -360,7 +366,7 @@ def _scan_cups(robot: Robot, cups: list[dict[str, float]]) -> list[dict[str, flo
                     continue
                 b = _detection_center_bearing_deg(det, img_w)
                 off = abs(b - expected_in_frame)
-                if off > MALLOW_CUP_BEARING_MATCH_DEG:
+                if off > SCAN_CENTER_TOLERANCE_DEG:
                     continue
                 if off < best_cup_offset:
                     best_cup_offset = off
@@ -371,7 +377,7 @@ def _scan_cups(robot: Robot, cups: list[dict[str, float]]) -> list[dict[str, flo
                 if conf < MIN_CONFIDENCE_MARSHMALLOW:
                     continue
                 b = _detection_center_bearing_deg(det, img_w)
-                if abs(b - expected_in_frame) > MALLOW_CUP_BEARING_MATCH_DEG:
+                if abs(b - expected_in_frame) > SCAN_CENTER_TOLERANCE_DEG:
                     continue
                 if conf > cup["mallow_conf"]:
                     cup["mallow_conf"] = conf
