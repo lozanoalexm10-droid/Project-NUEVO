@@ -30,7 +30,7 @@ from __future__ import annotations
 
 # ── Run configuration ─────────────────────────────────────────────────────────
 START_SEGMENT = 1    # 1–4: segment to begin from; 1 = full course from start
-AUTO_START    = True
+AUTO_START    = False
 
   # True = 3-second countdown; False = green-light trigger (BTN_1 to override)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ SEG3A_CFG = dict(speed=130, lookahead=300, spacing=50)
 # below if behavior regresses on the real course.
 SEG3B_CFG = dict(
     speed=75, lookahead=290, spacing=400,
-    safe_dist=230, lane_width=451, avoidance_delay=245,
+    safe_dist=250, lane_width=451, avoidance_delay=245,
     obstacles_range=570, view_angle=70.0, alpha_Ld=0.70, offset=324,
 )
 # SEG3B_CFG = dict(   # previous tuning (pre-2026-06-09)
@@ -122,7 +122,10 @@ X_OBS_MID = 1525.0    # obstacle zone centreline
 X_LANE5   = 2440.0    # lane 5 centre
 
 Y_START   =    -160.0    # course start y
-Y_TOP     = 3500.0    # far (north) end of course — top turns happen here
+Y_TOP     = 3450.0    # far (north) end of course — top turns happen here
+                      # (lowered 50 mm: SEG1 was stopping 50 mm into the top
+                      # wall; this also pulls SEG2's top corners south the
+                      # same amount)
 Y_BOT     =  460.0    # near (south) end — bottom turns happen here
                       # (lowered 150 mm so the obstacle-zone turn/entry sit further south)
 
@@ -142,8 +145,25 @@ CP3 = ( 1982.5, 3660.0)
 # stays inside the course. Defined here (above the SEG_PATH lists) because the
 # path definitions reference these constants.
 TOP_WALL_MARGIN_MM    = 200.0  # corner y = Y_TOP - this (SEG3C north→east, SEG4 east→south)
-EAST_WALL_MARGIN_MM   = 200.0  # SEG4 east corner x = X_LANE5 - this
-BOTTOM_WALL_MARGIN_MM =  20.0  # bottom-row corner y = Y_BOT + this (SEG2 south→east, SEG3A east→north, CP2)
+EAST_WALL_MARGIN_MM   = 50.0  # SEG4 east corner x = X_LANE5 - this
+BOTTOM_WALL_MARGIN_MM =  75.0  # bottom-row corner y = Y_BOT + this (SEG2 south→east, SEG3A east→north, CP2)
+
+# ── Manual reposition checkpoint (SEG3B → SEG3 exit) ──────────────────────────
+# SEG3B's obstacle traversal drifts heading enough that the robot was veering
+# into the west wall on the north run. Instead of fighting it autonomously,
+# the FSM stops for a fixed window so the operator can physically place the
+# robot at a standardized pose; SEG3 exit and SEG4 then plan from a known
+# origin instead of inheriting drift from the obstacle zone.
+#   • North wall at 6.5 * 610 = 3965 mm; corner sits 305 mm above the handoff
+#     (305 mm clearance, well above the 200 mm safety minimum).
+#   • East leg spans 915 mm from x=1525 to lane 5 (x=2440); SEG4's existing
+#     EAST_WALL_MARGIN_MM keeps the corner waypoint inset to soak pure-pursuit
+#     overshoot before the robot drifts back east into lane 5 for the finish.
+MANUAL_REPOSITION_HOLD_S = 6.0
+MANUAL_REPOS_X     = 2.5 * 610   # 1525 mm — obstacle zone centerline
+MANUAL_REPOS_Y     = 5.5 * 610   # 3355 mm — handoff y
+MANUAL_REPOS_THETA = 90.0        # robot facing north after manual placement
+Y_TOP_POST_REPOS   = MANUAL_REPOS_Y + 305.0   # 3660 mm — post-handoff U-turn corner y
 
 # ── Segment waypoints ─────────────────────────────────────────────────────────
 # All coordinates are expressed relative to the segment's own start point
@@ -176,7 +196,7 @@ OBS_ENTRY_OFFSET_MM = 400.0  # SEG3A drives the robot this far north of the
                              # it time to finish the 90° turn and settle on the
                              # centerline pointing north before any cones are
                              # considered.
-OBS_EXIT_OFFSET_MM  = 400.0  # Distance from north wall at which SEG3B's avoidance
+OBS_EXIT_OFFSET_MM  = 700.0  # Distance from north wall at which SEG3B's avoidance
                              # phase ends. Was 900 to keep the wall out of
                              # obstacles_range, but path_planner.gen_obstacle_waypoint
                              # now filters obstacles past goal_y, so the wall can
@@ -187,6 +207,15 @@ OBS_EXIT_OFFSET_MM  = 400.0  # Distance from north wall at which SEG3B's avoidan
                              # the goal-y filter misbehaves on the real course:
 # OBS_EXIT_OFFSET_MM  = 900.0  # previous value — kept wall out of obstacles_range
                                # by ending SEG3B 900mm short of the north wall.
+
+# SEG3B fallback completion. Real-course observation: after the last cone the
+# pure-pursuit loop occasionally jitters in place without ever tripping its
+# 30 mm goal_tolerance — which leaves the FSM frozen in the obstacle phase
+# and the manual-reposition hold never fires. Once the robot crosses this
+# absolute y, we treat SEG3B as done regardless of pp state and jump straight
+# into the hold. Threshold sits 100 mm short of SEG3B's nominal goal y so it
+# only fires past any expected cone position.
+SEG3B_FORCE_COMPLETE_Y = Y_TOP - OBS_EXIT_OFFSET_MM - 100.0   # 2650 mm at Y_TOP=3450
 
 # Segment 3: three internal sub-paths with different avoidance settings.
 #   3a (avoidance OFF): CP2 east → corner → OBS_ENTRY_OFFSET_MM north.
@@ -204,11 +233,15 @@ SEG3_OBS_PATH = [
     (X_OBS_MID, Y_BOT + OBS_ENTRY_OFFSET_MM),
     (X_OBS_MID, Y_TOP - OBS_EXIT_OFFSET_MM),
 ]
-#   3c (avoidance OFF): finish north run → 90° right turn → east to CP3.
+#   3c (avoidance OFF): runs AFTER the manual reposition. Course-frame
+#   waypoints from the standardized handoff pose: drive 305 mm north to the
+#   U-turn corner, then half the east leg to the CP3-equivalent. SEG4 takes
+#   over from there. ox/oy is rebased to the handoff pose before this path
+#   loads, so _op() shifts these into the post-reposition odometry frame.
 SEG3_EXIT_PATH = [
-    (X_OBS_MID, Y_TOP - OBS_EXIT_OFFSET_MM),
-    (X_OBS_MID, Y_TOP - TOP_WALL_MARGIN_MM),                    # corner (north → east), pulled south of wall
-    (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM),            # CP3 (1982.5, Y_TOP - margin)
+    (MANUAL_REPOS_X, MANUAL_REPOS_Y),                          # (1525, 3355) — handoff
+    (MANUAL_REPOS_X, Y_TOP_POST_REPOS),                        # (1525, 3660) — corner (north → east)
+    (MANUAL_REPOS_X + 457.5, Y_TOP_POST_REPOS),                # (1982.5, 3660) — CP3-equivalent
 ]
 
 # Segment 4: CP3 → corner → lane 5 south → manipulation station.
@@ -218,9 +251,9 @@ SEG3_EXIT_PATH = [
 #   it — pure pursuit's lookahead pulls in south-leg waypoints during the
 #   east approach, curving the robot smoothly around the corner.
 SEG4_PATH = [
-    (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM),                  # CP3 (matches SEG3C end)
-    (X_LANE5 - EAST_WALL_MARGIN_MM, Y_TOP - TOP_WALL_MARGIN_MM),      # 90° right-turn corner, pulled west+south of walls
-    (FINISH_X, FINISH_Y),                                             # manipulation station (robot drifts east to lane 5 centerline as it heads south)
+    (MANUAL_REPOS_X + 457.5, Y_TOP_POST_REPOS),                       # (1982.5, 3660) — CP3-equiv, matches SEG3 exit end
+    (X_LANE5 - EAST_WALL_MARGIN_MM, Y_TOP_POST_REPOS),                # (2240, 3660) — corner (east → south), inset for overshoot
+    (FINISH_X, FINISH_Y),                                             # (2440, 280) — manipulation station; robot drifts east to lane 5 centerline as it heads south
 ]
 # Previous split-path layout (kept for reference / quick revert):
 # SEG4_EAST_PATH = [
@@ -238,7 +271,7 @@ _SEG_START = {
     1: (X_LANE1,           Y_START, 90.0),   # lane 1, facing north
     2: (X_LANE1 + 305.0,   Y_TOP,    0.0),   # CP1, facing east
     3: (X_LANE2 + 457.5,   Y_BOT + BOTTOM_WALL_MARGIN_MM, 0.0),   # CP2 (margin-inset), facing east
-    4: (X_OBS_MID + 457.5, Y_TOP - TOP_WALL_MARGIN_MM, 0.0),   # CP3 (margin-inset), facing east
+    4: (X_OBS_MID + 457.5, Y_TOP_POST_REPOS, 0.0),   # CP3-equivalent (post-reposition), facing east
 }
 
 
@@ -515,7 +548,20 @@ def run(robot: Robot) -> None:  # noqa: C901
             robot.set_led(LED.ORANGE, 0)
             if robot.get_button(Button.BTN_2):
                 _estop(robot); return
-            if robot._nav_follow_pp_path_loop() == "IDLE":
+            pp_idle = robot._nav_follow_pp_path_loop() == "IDLE"
+            # SEG3B fallback: if pp jitters past the last cone without ever
+            # tripping its goal_tolerance, force-complete the obstacle phase
+            # once the robot crosses SEG3B_FORCE_COMPLETE_Y so the manual-
+            # reposition hold still fires.
+            if not pp_idle and seg3_phase == "obstacle":
+                _, py_chk, _ = robot.get_odometry_pose()
+                if py_chk + oy >= SEG3B_FORCE_COMPLETE_Y:
+                    print(f"[FSM] SEG3B force-complete: y={py_chk + oy:.0f} "
+                          f">= {SEG3B_FORCE_COMPLETE_Y:.0f} — skipping pp "
+                          f"goal_tolerance wait.")
+                    robot.stop()
+                    pp_idle = True
+            if pp_idle:
                 px, py, pth = robot.get_odometry_pose()
                 abs_x, abs_y = px + ox, py + oy
                 if seg3_phase == "approach":
@@ -528,10 +574,17 @@ def run(robot: Robot) -> None:  # noqa: C901
                 elif seg3_phase == "obstacle":
                     # pth is already degrees (see navigation.get_odometry_pose).
                     print(f"[FSM] SEG3 obstacle zone done at abs=({abs_x:.0f},{abs_y:.0f}) "
-                          f"θ={pth:.1f}° (expected 90°) — pausing 3 s for manual adjust.")
+                          f"θ={pth:.1f}° (expected 90°) — pausing "
+                          f"{MANUAL_REPOSITION_HOLD_S:.0f} s for manual reposition to "
+                          f"standardized pose ({MANUAL_REPOS_X:.0f}, {MANUAL_REPOS_Y:.0f}) "
+                          f"θ={MANUAL_REPOS_THETA:.0f}°.")
                     robot.stop()
-                    # Blink red+orange so the pause is unmistakable on the rover.
-                    for _ in range(3):
+                    # 1 Hz blink across the full hold so the operator can place
+                    # the robot at the standardized handoff pose. The cycle
+                    # length matches MANUAL_REPOSITION_HOLD_S so it scales if
+                    # the constant changes.
+                    n_blinks = max(1, int(round(MANUAL_REPOSITION_HOLD_S)))
+                    for _ in range(n_blinks):
                         robot.set_led(LED.RED, 255)
                         robot.set_led(LED.ORANGE, 255)
                         robot.set_led(LED.GREEN, 0)
@@ -540,8 +593,19 @@ def run(robot: Robot) -> None:  # noqa: C901
                         robot.set_led(LED.ORANGE, 0)
                         time.sleep(0.5)
                     robot.set_led(LED.GREEN, 255)
-                    px2, py2, pth2 = robot.get_odometry_pose()
-                    print(f"[FSM] Resuming SEG3 exit at abs=({px2+ox:.0f},{py2+oy:.0f}) θ={pth2:.1f}°.")
+                    # Re-anchor odometry to the manually-placed standardized
+                    # pose so SEG3 exit / SEG4 plan from a known origin instead
+                    # of inheriting obstacle-zone drift. Reassigning ox, oy
+                    # rebases _op() — the closure reads them at call time, so
+                    # the SEG3 exit path and the later SEG4 load both use the
+                    # new origin without further plumbing.
+                    robot.set_initial_theta(MANUAL_REPOS_THETA)
+                    robot.reset_odometry()
+                    if not robot.wait_for_odometry_reset(timeout=3.0):
+                        print("[WARN] Odometry reset not confirmed within 3 s after manual reposition — pose may be stale.")
+                    ox, oy = MANUAL_REPOS_X, MANUAL_REPOS_Y
+                    print(f"[FSM] Resuming SEG3 exit from standardized "
+                          f"abs=({ox:.0f},{oy:.0f}) θ={MANUAL_REPOS_THETA:.0f}°.")
                     _load_path(robot, _op(SEG3_EXIT_PATH), SEG3C_CFG, obstacle_avoidance=False)
                     seg3_phase = "exit"
                 elif seg3_phase == "exit":
