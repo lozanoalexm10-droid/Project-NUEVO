@@ -575,6 +575,15 @@ def run(robot: Robot) -> None:  # noqa: C901
                           f"θ={pth:.1f}° — entering obstacle zone "
                           f"(goal y={Y_TOP - OBS_EXIT_OFFSET_MM:.0f}, "
                           f"wall y={Y_TOP:.0f}, buffer={OBS_EXIT_OFFSET_MM:.0f} mm).")
+                    # Avoidance-on debug hold: stop for 3 s before loading the
+                    # SEG3B path so the operator can sanity-check the robot's
+                    # believed pose/heading vs. the centerline (x_L) before
+                    # avoidance starts steering around cones.
+                    print(f"[FSM] SEG3B start — holding 3 s. "
+                          f"abs=({abs_x:.0f},{abs_y:.0f}) θ={pth:.1f}° "
+                          f"(odom=({px:.0f},{py:.0f}), x_L_abs={X_OBS_MID:.0f})")
+                    robot.stop()
+                    time.sleep(3.0)
                     _load_path(robot, _op(SEG3_OBS_PATH), SEG3B_CFG, obstacle_avoidance=True, x_L=x_L_obs)
                     seg3_phase = "obstacle"
                 elif seg3_phase == "obstacle":
