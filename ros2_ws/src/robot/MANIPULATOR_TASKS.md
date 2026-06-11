@@ -92,8 +92,38 @@ them has a marshmallow on top. The marshmallow is dyed **purple** before
 the run to give the camera a high-contrast target; the rule-based detector
 matches a blue-violet HSV range, not the original white range.
 
-We tried sensor-based XY localisation and it did not give us a 30 mm-gripper-quality
-position. The camera's pinhole-bbox distance estimate is too noisy. So:
+The current scheme — hardcoded XY and camera-ranked Z — is the result of
+two earlier attempts that failed to give us a position estimate accurate
+enough for the 30 mm gripper opening.
+
+**Attempt 1: ultrasonic + camera for XY localisation.** The original plan
+was to use the forearm-mounted ultrasonic rangefinder for the forward
+distance to the cup and refine the lateral position from the camera bbox
+centre. This failed for two reasons: the ultrasonic beam at arm length is a
+wide (~30°) cone that cannot distinguish between adjacent cups in the stack
+array — it returns the nearest reflector inside its cone, which is often
+the wrong cup — and the camera's bbox-centre lateral estimate inherits all
+of the pinhole distance noise discussed below.
+
+**Attempt 2: camera-only XY from bbox.** Dropping the ultrasonic, we tried
+localising both x and y purely from the cup bbox centre and the known cup
+diameter, using the pinhole formula
+`distance ≈ focal_px · cup_diameter / bbox_width_px`. Per-pixel noise on
+the bbox edges scales position error roughly with distance², giving
+±20-30 mm of uncertainty at our typical 200 mm scan range. The gripper
+opening is 30 mm; a 20 mm miss is a dropped pick.
+
+**Final: hardcoded XY, ranked Z.** Because the four cup positions in the
+manipulation zone are physically fixed at the start of each run, we measure
+them by hand once and bake them into `HARDCODED_CUPS_CAMERA_MM`. The camera
+then has only one job during the manipulation phase: rank the four stacks
+by apparent height and identify which one has the marshmallow on it.
+Rank-based assignment is robust to the absolute height bias from the camera
+tilt (every stack is biased the same way, so the *order* survives even when
+the absolute height is off). The trade is that we lose generality — the
+system only works on the specific table layout we have measured — in
+exchange for a position estimate accurate to the hand-measurement of
+±2-3 mm rather than the camera estimate of ±20-30 mm. So:
 
 * **XY is hardcoded.** Each of the four cup positions is measured by hand
   and stored in `HARDCODED_CUPS_CAMERA_MM` as `(front_mm, side_mm)` in
@@ -223,6 +253,39 @@ between OPEN and CLOSE) and holds it via `_hold_grip` (re-asserts every
 safe-retracts (keeping the squeeze), rotates the turntable to
 `PLACE_TURNTABLE_DEG = −80°`, and runs IK to the fixed place target
 `(PLACE_X_MM, PLACE_Y_MM, PLACE_Z_MM)` from `_manipulator_config.py`.
+
+### 6.1 Reach envelope
+
+The two-link arm has a kinematic maximum reach of
+`L1 + L2 = 155 + 298 ≈ 453 mm (~17.8 in)` from the shoulder pivot. The
+effective workspace is somewhat smaller after the shoulder forward offset
+from the turntable axis (`ARM_SHOULDER_OFFSET_MM = 14 mm`), the shoulder
+and elbow safe-angle limits, and the elbow-up branch constraint (the
+forearm cannot fold into the chassis). The four cup positions, after the
+camera-to-turntable transform, all sit between roughly 360 mm and 410 mm
+radial distance from the turntable axis — comfortably inside the workspace
+and well clear of the maximum-extension limit where IK loses accuracy.
+
+### 6.2 Why placement is to the right (`PLACE_TURNTABLE_DEG = −80°`)
+
+The chassis-mounted LiDAR and the camera/campan assembly are bolted on the
+**front** of the robot, sitting directly between the turntable axis and
+the straight-ahead direction. The arm physically cannot drop the
+marshmallow at a point directly in front of the rover (a 0° bearing)
+without colliding with one of those mounts on the way down. The graham
+cracker is therefore placed **on the floor to the right of the rover**,
+at a turntable bearing of `−80°` and a radial distance of
+`PLACE_REACH_MM = hypot(PLACE_X_MM, PLACE_Y_MM) ≈ 330 mm` from the
+turntable axis. The placement z (`PLACE_Z_MM ≈ −201 mm`, about 46 mm
+above the floor) gives the arm enough vertical clearance to drop the
+marshmallow squarely onto the cracker without grazing it on the way in.
+
+The same front-of-robot obstruction is what makes SAFE_RAISE lift the
+shoulder before any turntable rotation — the arm cannot transit through
+the LiDAR/camera column at the rest pose. The cup-scan pan angles in
+`HARDCODED_CUPS_CAMERA_MM` were chosen for the same reason: the four cups
+sit in a fan that wraps around the front of the robot but stays outside
+the LiDAR/camera no-fly cylinder.
 
 ## 7. State machine
 

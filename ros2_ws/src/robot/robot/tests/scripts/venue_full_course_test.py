@@ -78,6 +78,10 @@ STOP_SIGN_DWELL_S = 3.0
 # larger value forces the robot to approach further before pausing.
 STOP_SIGN_MIN_FRAC = 0.18
 STOP_SIGN_MIN_CONF = 0.50
+# Don't even look for the stop sign until the rover is south of this absolute
+# y (mm). Above this y the detector is ignored entirely — early detections
+# of the sign from far up the lane were triggering false stops.
+STOP_SIGN_GATE_Y_MM = 1.75 * 610  # 1067.5 mm
 
 # Per-segment tuning — adjust speed (mm/s) and lookahead (mm) here.
 # Larger lookahead = wider, earlier turns = less corner overshoot.
@@ -245,7 +249,9 @@ SEG3_EXIT_PATH = [
 ]
 
 # Segment 4: CP3 → corner → lane 5 south → manipulation station.
-#   Stop-sign detection active throughout. 3-second dwell on first detection.
+#   Stop-sign detection is gated on abs_y ≤ STOP_SIGN_GATE_Y_MM (1.75 lane
+#   widths north of y=0); the first close-enough detection south of that
+#   gate triggers a 3-second dwell, then a straight shot to (X_LANE5, 0).
 #   Loaded as ONE continuous path (like SEG2's right-then-right run) so the
 #   robot keeps moving through the east→south corner instead of stopping at
 #   it — pure pursuit's lookahead pulls in south-leg waypoints during the
@@ -615,11 +621,17 @@ def run(robot: Robot) -> None:  # noqa: C901
                     state = "SEG4"
 
         # ── SEG4: CP3 → corner → lane 5 south → Finish (single path) ──────────
-        #   Stop-sign detection active. First close-enough detection triggers a
-        #   3-second hold (red LED). After dwell, nav resumes to the finish.
+        #   Stop-sign detection is gated on abs_y ≤ STOP_SIGN_GATE_Y_MM —
+        #   above that y we just drive. Once south of the gate, the first
+        #   close-enough detection triggers a 3-second hold (red LED); after
+        #   the dwell, the remaining path is replaced with a straight shot to
+        #   (X_LANE5, y=0).
         elif state == "SEG4":
             if robot.get_button(Button.BTN_2):
                 _estop(robot); return
+
+            px, py, _ = robot.get_odometry_pose()
+            abs_y = py + oy
 
             if stop_sign_seen and stop_sign_pause_t > 0.0:
                 # Holding at stop sign
@@ -627,14 +639,25 @@ def run(robot: Robot) -> None:  # noqa: C901
                 robot.set_led(LED.RED, 255)
                 robot.set_led(LED.GREEN, 0)
                 if time.monotonic() - stop_sign_pause_t >= STOP_SIGN_DWELL_S:
-                    print("[FSM] Stop-sign dwell complete — resuming to finish.")
+                    abs_x_now = px + ox
+                    print(f"[FSM] Stop-sign dwell complete at "
+                          f"abs=({abs_x_now:.0f},{abs_y:.0f}) — driving "
+                          f"straight to (X_LANE5={X_LANE5:.0f}, y=0).")
                     stop_sign_pause_t = 0.0
                     robot.set_led(LED.RED, 0)
                     robot.set_led(LED.GREEN, 255)
+                    _load_path(
+                        robot,
+                        _op([(abs_x_now, abs_y), (X_LANE5, 0.0)]),
+                        SEG4_CFG,
+                        obstacle_avoidance=False,
+                    )
 
-            elif not stop_sign_seen:
-                # Only trigger once the sign appears large enough in the frame
-                # (proxy for being close), not on the very first sighting.
+            elif not stop_sign_seen and abs_y <= STOP_SIGN_GATE_Y_MM:
+                # South of the gating y — start watching for a close-enough sign.
+                # We still require the bbox-height fraction so the detection
+                # corresponds to actually being near the sign, not just seeing
+                # it at distance the moment we cross the gate.
                 _, img_h = robot.get_detection_image_size()
                 close_det = None
                 if img_h > 0:
@@ -654,7 +677,8 @@ def run(robot: Robot) -> None:  # noqa: C901
                     stop_sign_pause_t = time.monotonic()
                     robot.set_led(LED.RED, 255)
                     robot.set_led(LED.GREEN, 0)
-                    print(f"[FSM] Stop sign close (bbox h={h_frac:.2f} of frame) "
+                    print(f"[FSM] Stop sign close at abs_y={abs_y:.0f} "
+                          f"(bbox h={h_frac:.2f} of frame) "
                           f"— pausing {STOP_SIGN_DWELL_S:.0f} s.")
                 else:
                     # Keep driving until the sign is close enough
@@ -666,7 +690,11 @@ def run(robot: Robot) -> None:  # noqa: C901
                         state = "DONE"
 
             else:
-                # Normal driving toward finish
+                # Two cases share this branch:
+                #   • Pre-gate (abs_y > STOP_SIGN_GATE_Y_MM, sign not yet
+                #     seen): drive normally, ignore the detector.
+                #   • Post-dwell (stop_sign_seen=True, pause cleared): follow
+                #     the new straight-to-(X_LANE5, 0) path loaded above.
                 robot.set_led(LED.GREEN, 255)
                 robot.set_led(LED.ORANGE, 0)
                 if robot._nav_follow_pp_path_loop() == "IDLE":
