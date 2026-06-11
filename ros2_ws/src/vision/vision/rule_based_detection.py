@@ -98,9 +98,18 @@ def detect_marshmallow(
     blurred = cv2.GaussianBlur(frame_bgr, (5, 5), 0)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
 
-    # White: any hue, low saturation, high value. OpenCV HSV: H 0-180, S 0-255, V 0-255.
-    white_low  = np.array([0,   0, 170], dtype=np.uint8)
-    white_high = np.array([180, 60, 255], dtype=np.uint8)
+    # White / cream: any hue, moderate-low saturation, moderate-high value.
+    # OpenCV HSV: H 0-180, S 0-255, V 0-255.
+    # Thresholds were originally (V>=170, S<=60) for a brightly-lit white
+    # marshmallow against neutral background. Loosened to (V>=110, S<=100)
+    # because: the comp/practice background is matte black, the camera
+    # auto-exposes for the dark scene and the mallow ends up dim cream
+    # (sampled HSV median ≈ H 35, S 86, V 75; bright edge V ~140). The
+    # old thresholds matched zero pixels on real frames so the detector
+    # never fired. The tighter "real white" thresholds are still preserved
+    # in the morphology + pink-ring + area + aspect filters below.
+    white_low  = np.array([0,   0, 110], dtype=np.uint8)
+    white_high = np.array([180, 100, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, white_low, white_high)
 
     # Open removes isolated noise; close fills small gaps inside the blob.

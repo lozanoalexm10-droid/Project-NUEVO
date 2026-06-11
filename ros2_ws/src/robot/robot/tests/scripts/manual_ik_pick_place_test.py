@@ -65,6 +65,7 @@ from robot.tests.scripts._manipulator_config import (
     SHOULDER_SAFE_MAX,
     SHOULDER_SAFE_MIN,
     SHOULDER_STOW_DEG,
+    STEPS_PER_CAMPAN_DEG,
     TURNTABLE_ACCELERATION,
     TURNTABLE_HOME_OFFSET_DEG,
     TURNTABLE_MAX_DEG,
@@ -89,7 +90,25 @@ from robot.tests.scripts._manipulator_config import (
 # and is slightly wrong; this file is the corrected version.
 #   +front = forward of campan axis
 #   +side  = right of campan axis  (robot +y = LEFT, so y = -side)
-PICK_STACK_INDEX: int = 4
+#
+# Stack heights are HARDCODED (no longer randomized) — the only thing that
+# varies between runs is which stack carries the marshmallow. Flip
+# DETECT_STACK to choose how that stack is selected:
+#   True  → pan the campan to each of the 4 stacks, run vision detection on
+#           each, pick whichever stack returns the highest-confidence
+#           marshmallow hit. Falls back to PICK_STACK_INDEX if nothing is
+#           detected (e.g. vision node not up).
+#   False → use PICK_STACK_INDEX as-is.
+DETECT_STACK:     bool = True
+PICK_STACK_INDEX: int  = 4
+
+# When SCAN_ONLY is True the script does ARM_HOME → DETECT_STACK_STATE → RESTOW
+# and never runs the IK pick/place. Use this to collect per-stack camera frames
+# (saved into /runtime_output/vision/manual_stack{N}_pan{deg}.jpg) when the
+# detector misses a marshmallow so you can eyeball the image, exposure, and
+# framing before retuning the rule-based detector. Set False to do the full
+# pick → carry → place once detection is happy.
+SCAN_ONLY: bool = False
 
 # Stack table — index 0 unused so PICK_STACK_INDEX is 1-based.
 # Each entry: (front_mm, side_mm, mallow_z_mm, label)
@@ -100,8 +119,36 @@ STACK_TABLE: list[tuple[float, float, float, str]] = [
     (123.0+25, -192.0-25, MALLOW_Z_STACK_16_MM, "stack#1 LEFTMOST 16-cup"),  # 1
     (217.0,  -6.0, MALLOW_Z_STACK_11_MM, "stack#2 11-cup"),           # 2
     (185.0,  135.0, MALLOW_Z_STACK_9_MM,  "stack#3 9-cup"),            # 3
-    ( 97.0+20,  212.0+40, MALLOW_Z_STACK_14_MM+15, "stack#4 RIGHTMOST 14-cup"), # 4
+    ( 97.0,  212.0+35, MALLOW_Z_STACK_14_MM, "stack#4 RIGHTMOST 14-cup"), # 4
 ]
+
+# Per-stack campan pan angle for the DETECT_STACK scan, computed from each
+# stack's (front, side) bearing from the campan axis. The actual hardware
+# behavior is +campan_deg → camera looks LEFT (see venue_full_course_test.py
+# GREEN_LIGHT_CAMPAN_DEG = +30°, which is the LEFT-side green light). The
+# comments in _manipulator_config.py and arm_kinematics.py that say
+# "positive = right" are wrong/aspirational — trust the hardware behavior.
+# Since +side = right of robot, the campan_deg that POINTS the camera at a
+# stack is the NEGATION of atan2(side, front):
+#   stack on the RIGHT  (side > 0) → need camera to look right → campan < 0
+#   stack on the LEFT   (side < 0) → need camera to look left  → campan > 0
+# Index 0 unused (1-based stack index).
+STACK_CAMPAN_DEG: list[float] = [
+    0.0,
+    -math.degrees(math.atan2(STACK_TABLE[1][1], STACK_TABLE[1][0])),
+    -math.degrees(math.atan2(STACK_TABLE[2][1], STACK_TABLE[2][0])),
+    -math.degrees(math.atan2(STACK_TABLE[3][1], STACK_TABLE[3][0])),
+    -math.degrees(math.atan2(STACK_TABLE[4][1], STACK_TABLE[4][0])),
+]
+
+# Detection-mode tuning. SETTLE = pause after each campan move so the vision
+# pipeline has a fresh frame before we read detections. MIN_CONFIDENCE filters
+# out spurious low-confidence hits. VISION_WAIT_S is how long we wait at the
+# start for the vision node to come up before giving up and falling back.
+DETECT_CAMPAN_SETTLE_S:     float = 1.0
+DETECT_MIN_CONFIDENCE:      float = 0.35
+DETECT_VISION_WAIT_S:       float = 5.0
+MARSHMALLOW_CLASS:          str   = "marshmallow"
 
 # Lift the commanded pick z by this much above the known mallow center — the
 # arm sags under load and IK predicts a slightly higher tip than reality.
@@ -120,11 +167,28 @@ PICK_FORWARD_OFFSET_MM: float = 205.0
 # is the bearing from the TURNTABLE AXIS — feeding a camera/campan-frame bearing
 # into _turntable_to_deg is what made the off-axis pick miss by ~180 mm earlier
 # (the original head-on test masked the bug by always picking at bearing=0).
-_stack_front, _stack_side, _stack_mallow_z, _stack_label = STACK_TABLE[PICK_STACK_INDEX]
-PICK_X_MM:          float = _stack_front + PICK_FORWARD_OFFSET_MM
-PICK_Y_MM:          float = -_stack_side
-PICK_Z_MM:          float = _stack_mallow_z + PICK_Z_LIFT_MM
-PICK_TURNTABLE_DEG: float = math.degrees(math.atan2(PICK_Y_MM, PICK_X_MM))
+def _pick_coords_for_stack(
+    index: int,
+) -> tuple[float, float, float, float, float, str]:
+    """Return (pick_x, pick_y, pick_z, pick_turntable_deg, mallow_z, label)
+    in the turntable-axis frame for STACK_TABLE[index]."""
+    front, side, mallow_z, label = STACK_TABLE[index]
+    pick_x      = front + PICK_FORWARD_OFFSET_MM
+    pick_y      = -side
+    pick_z      = mallow_z + PICK_Z_LIFT_MM
+    pick_tt_deg = math.degrees(math.atan2(pick_y, pick_x))
+    return pick_x, pick_y, pick_z, pick_tt_deg, mallow_z, label
+
+
+(
+    PICK_X_MM,
+    PICK_Y_MM,
+    PICK_Z_MM,
+    PICK_TURNTABLE_DEG,
+    _stack_mallow_z,
+    _stack_label,
+) = _pick_coords_for_stack(PICK_STACK_INDEX)
+_stack_front, _stack_side = STACK_TABLE[PICK_STACK_INDEX][0], STACK_TABLE[PICK_STACK_INDEX][1]
 
 # ── Place target ──────────────────────────────────────────────────────────────
 # Reach + base z from _manipulator_config.py (PLACE_X_MM, PLACE_Y_MM = 128, -226
@@ -300,6 +364,123 @@ def _campan_to_deg(robot: Robot, target_deg: float) -> None:
     time.sleep(1.0)
 
 
+def _campan_to_deg_blocking(robot: Robot, target_deg: float) -> bool:
+    """Blocking campan move used by the detection scan. Earlier the scan used
+    _campan_to_deg (fire-and-forget + 1.0 s sleep) and the camera grabbed
+    frames while the stepper was still moving — stack #4 at ~+65° literally
+    never showed up because at 200 steps/sec ≈ 35°/sec the move takes ~1.9 s,
+    longer than the fixed sleep. Block until the firmware reports the move
+    finished, with a timeout computed from the full angular travel."""
+    steps = campan_deg_to_steps(target_deg)
+    # Worst case: a full sweep from one end of the campan range to the other.
+    # At 200 steps/sec ≈ 35°/sec a 140° sweep is 4.0 s; add headroom for accel.
+    deg_per_sec = CAMPAN_MAX_VELOCITY / STEPS_PER_CAMPAN_DEG
+    travel_s    = abs(target_deg) / deg_per_sec  # campan home = 0°, so |target|
+    timeout_s   = max(travel_s * 2.0 + 1.0, 4.0)
+    ok = robot.step_move(
+        CAMPAN_STEPPER, steps, StepMoveType.ABSOLUTE, timeout=timeout_s,
+    )
+    if not ok:
+        print(f"[TEST] DETECT_STACK — campan blocking move to {target_deg:+.1f}° "
+              f"timed out after {timeout_s:.1f}s.")
+    return ok
+
+
+def _detect_stack_index(robot: Robot) -> int | None:
+    """Pan the campan to each of the 4 stacks and run vision detection at
+    each position. Returns the 1-based index of the stack with the highest-
+    confidence marshmallow hit, or None if nothing meeting
+    DETECT_MIN_CONFIDENCE was seen on any stack.
+
+    Caller is responsible for falling back to PICK_STACK_INDEX on None.
+    """
+    print("[TEST] DETECT_STACK — enabling vision and scanning all 4 stacks.")
+    try:
+        robot.enable_vision()
+    except Exception as exc:
+        print(f"[TEST] DETECT_STACK — enable_vision failed: {exc}")
+        return None
+
+    deadline = time.monotonic() + DETECT_VISION_WAIT_S
+    vision_up = False
+    while time.monotonic() < deadline:
+        try:
+            if robot.is_vision_active(timeout_s=1.0):
+                vision_up = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.3)
+    if not vision_up:
+        print(f"[TEST] DETECT_STACK — vision node not active after "
+              f"{DETECT_VISION_WAIT_S:.1f}s; cannot detect.")
+        return None
+
+    try:
+        os.makedirs(VISION_OUT_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+    best_idx:  int   = -1
+    best_conf: float = -1.0
+    for idx in (1, 2, 3, 4):
+        campan_deg = STACK_CAMPAN_DEG[idx]
+        # Block until the stepper actually reaches the target — earlier this
+        # used the fire-and-forget _campan_to_deg, which let the camera grab
+        # frames mid-motion and meant stack #4 (~+65°, ~1.9 s travel) was
+        # never on-screen by the time we snapped.
+        _campan_to_deg_blocking(robot, campan_deg)
+        # Settle: camera + detection pipeline has frame latency. Wait long
+        # enough that the next "latest.jpg" the vision node writes is from
+        # AFTER the motor finished moving, not the last frame captured while
+        # it was still rotating.
+        time.sleep(DETECT_CAMPAN_SETTLE_S)
+        # Snapshot the camera frame so failed detections can be debugged
+        # after the fact. The vision pipeline writes latest.jpg on every
+        # frame; copy it to a per-stack name before the next pan moves on.
+        try:
+            src = os.path.join(VISION_OUT_DIR, "latest.jpg")
+            dst = os.path.join(
+                VISION_OUT_DIR,
+                f"manual_stack{idx}_pan{campan_deg:+04.0f}.jpg",
+            )
+            shutil.copyfile(src, dst)
+            img_note = f"  img={dst}"
+        except Exception as exc:
+            img_note = f"  img=FAILED ({exc})"
+        # Fetch detections AFTER the snapshot/settle so the detections and
+        # the saved frame come from roughly the same moment in time.
+        try:
+            dets = robot.get_detections(MARSHMALLOW_CLASS)
+        except Exception as exc:
+            print(f"[TEST] DETECT_STACK — get_detections failed at stack#{idx}: {exc}")
+            dets = []
+        # Log every detection (including ones below MIN_CONFIDENCE) so we
+        # can tell "rule-based detector saw nothing" from "saw it but at
+        # 0.20 confidence, raise tolerance".
+        for d in dets:
+            print(f"[TEST] DETECT_STACK —   raw det: class={d.get('class_name')}  "
+                  f"conf={float(d.get('confidence', 0.0)):.2f}  bbox={d.get('bbox')}")
+        confs = [float(d.get("confidence", 0.0)) for d in dets]
+        good  = [c for c in confs if c >= DETECT_MIN_CONFIDENCE]
+        top   = max(good) if good else (max(confs) if confs else 0.0)
+        print(f"[TEST] DETECT_STACK — stack#{idx} campan={campan_deg:+5.1f}°  "
+              f"detections={len(dets)}  good(≥{DETECT_MIN_CONFIDENCE:.2f})={len(good)}  "
+              f"top_conf={top:.2f}  ({STACK_TABLE[idx][3]}){img_note}")
+        if good and top > best_conf:
+            best_conf = top
+            best_idx  = idx
+
+    _campan_to_deg(robot, 0.0)
+
+    if best_idx < 0:
+        print("[TEST] DETECT_STACK — no marshmallow detected on any stack.")
+        return None
+    print(f"[TEST] DETECT_STACK — selected stack#{best_idx}  conf={best_conf:.2f}  "
+          f"({STACK_TABLE[best_idx][3]})")
+    return best_idx
+
+
 # ── Main FSM ──────────────────────────────────────────────────────────────────
 
 def run(robot: Robot) -> None:  # noqa: C901
@@ -317,9 +498,16 @@ def run(robot: Robot) -> None:  # noqa: C901
     turntable_home_offset: float = TURNTABLE_HOME_OFFSET_DEG
 
     # Pick coordinates come directly from the module-level STACK_TABLE → PICK_*
-    # derivation (turntable-axis frame). No bearing/distance round-trip.
-    pick_x, pick_y, pick_z = PICK_X_MM, PICK_Y_MM, PICK_Z_MM
-    pick_turntable_deg     = PICK_TURNTABLE_DEG
+    # derivation (turntable-axis frame). No bearing/distance round-trip. When
+    # DETECT_STACK is on these are overwritten in DETECT_STACK_STATE once
+    # vision picks the marshmallow-bearing stack.
+    selected_stack_index: int   = PICK_STACK_INDEX
+    pick_x:               float = PICK_X_MM
+    pick_y:               float = PICK_Y_MM
+    pick_z:               float = PICK_Z_MM
+    pick_turntable_deg:   float = PICK_TURNTABLE_DEG
+    pick_label:           str   = _stack_label
+    pick_mallow_z:        float = _stack_mallow_z
 
     # Pre-compute place coordinates.
     place_rad = math.radians(PLACE_TURNTABLE_DEG)
@@ -328,8 +516,11 @@ def run(robot: Robot) -> None:  # noqa: C901
     place_z   = PLACE_Z_MM
 
     print(f"[TEST] ── Manual IK Pick-Place ─────────────────────────────────")
-    print(f"[TEST] PICK_STACK_INDEX={PICK_STACK_INDEX}  ({_stack_label})  "
-          f"mallow_z={_stack_mallow_z:+.0f} + lift {PICK_Z_LIFT_MM:+.0f} = {pick_z:+.0f} mm")
+    print(f"[TEST] SCAN_ONLY={SCAN_ONLY}  (True = scan + save images, no pick/place)")
+    print(f"[TEST] Stack-selection mode: "
+          f"{'DETECT (vision)' if DETECT_STACK else f'MANUAL (PICK_STACK_INDEX={PICK_STACK_INDEX})'}")
+    print(f"[TEST] Default/manual stack: #{PICK_STACK_INDEX}  ({pick_label})  "
+          f"mallow_z={pick_mallow_z:+.0f} + lift {PICK_Z_LIFT_MM:+.0f} = {pick_z:+.0f} mm")
     print(f"[TEST] Stack (front, side) from campan axis: "
           f"({_stack_front:+.0f}, {_stack_side:+.0f}) mm  → "
           f"pick robot-frame  x={pick_x:.0f}  y={pick_y:.0f}  z={pick_z:.0f} mm  "
@@ -427,7 +618,50 @@ def run(robot: Robot) -> None:  # noqa: C901
             _turntable_to_deg(robot, 0.0, turntable_home_offset)
             time.sleep(0.5)
 
-            state = "VISION_SCAN" if RUN_VISION_SCAN else "IK_COMPUTE"
+            # SCAN_ONLY forces the detection pass even if DETECT_STACK is
+            # off — the whole point of scan-only is to capture images.
+            if DETECT_STACK or SCAN_ONLY:
+                state = "DETECT_STACK_STATE"
+            elif RUN_VISION_SCAN:
+                state = "VISION_SCAN"
+            else:
+                state = "IK_COMPUTE"
+            state_entry = time.monotonic()
+
+        # ── DETECT_STACK_STATE ───────────────────────────────────────────────
+        # Pan campan to each stack's bearing, run vision detection at each
+        # position, pick the stack with the highest-confidence marshmallow
+        # hit. Pick coordinates (pick_x/y/z + pick_turntable_deg) are then
+        # recomputed for that stack so IK_COMPUTE picks up the new target.
+        elif state == "DETECT_STACK_STATE":
+            if robot.get_button(Button.BTN_2):
+                robot.stop(); robot.shutdown(); return
+            detected = _detect_stack_index(robot)
+            if detected is None:
+                print(f"[TEST] DETECT_STACK_STATE — falling back to "
+                      f"PICK_STACK_INDEX={PICK_STACK_INDEX} ({_stack_label}).")
+                selected_stack_index = PICK_STACK_INDEX
+            else:
+                selected_stack_index = detected
+            (
+                pick_x,
+                pick_y,
+                pick_z,
+                pick_turntable_deg,
+                pick_mallow_z,
+                pick_label,
+            ) = _pick_coords_for_stack(selected_stack_index)
+            print(f"[TEST] DETECT_STACK_STATE — using stack#{selected_stack_index}  "
+                  f"({pick_label})  pick=({pick_x:.0f},{pick_y:.0f},{pick_z:.0f}) mm  "
+                  f"turntable={pick_turntable_deg:+.1f}°")
+            if SCAN_ONLY:
+                print(f"[TEST] DETECT_STACK_STATE — SCAN_ONLY=True, skipping "
+                      f"pick/place. Captured images in {VISION_OUT_DIR}.")
+                state = "RESTOW"
+            elif RUN_VISION_SCAN:
+                state = "VISION_SCAN"
+            else:
+                state = "IK_COMPUTE"
             state_entry = time.monotonic()
 
         # ── VISION_SCAN (cosmetic) ────────────────────────────────────────────
@@ -628,6 +862,24 @@ def run(robot: Robot) -> None:  # noqa: C901
             time.sleep(0.4)
             # Leave the marshmallow in place (still gripped) before dropping.
             _hold_grip(robot, SQUEEZE_DEG, PHASE_HOLD_S, "dwell at place location")
+            # Unload the jaw before opening. At the place pose the arm reaches
+            # out to the side and the gripper hangs almost horizontal; the
+            # mallow's weight + the moving-jaw's own weight under gravity bias
+            # the jaw toward CLOSED, and a worn / under-volted MG996R (see
+            # MG996R.pdf — torque sags ~20 % from 6 V → 4.8 V, stall current
+            # 2.5 A) can't overcome that to swing OPEN. Lifting the shoulder
+            # ~10° tips the gripper back toward vertical and takes that
+            # gravity assist off CLOSE, so the open command actually moves
+            # the jaw instead of holding it shut until the arm retracts.
+            UNLOAD_LIFT_DEG = 10.0
+            unload_target = shoulder_pos + UNLOAD_LIFT_DEG
+            print(f"[TEST] PLACING — unloading jaw: shoulder {shoulder_pos:.1f}° → "
+                  f"{unload_target:.1f}° before opening gripper.")
+            shoulder_pos = _move_servo(
+                robot, SHOULDER_CHANNEL, shoulder_pos, unload_target,
+                SHOULDER_SAFE_MIN, SHOULDER_SAFE_MAX,
+            )
+            time.sleep(0.3)
             # Release — ramp to OPEN, then hammer the open command for ~1.2 s
             # so a low-battery servo or a mallow stuck in the jaws can't keep
             # the gripper half-closed. _hold_grip re-asserts the angle every

@@ -77,7 +77,15 @@ class VisionNode(Node):
         self.declare_parameter("model_path", str(model_default))
         self.declare_parameter("model_imgsz", 416)
         self.declare_parameter("confidence_threshold", 0.25)
-        self.declare_parameter("min_display_confidence", 0.7)
+        # NOTE: dropped from 0.7 → 0.30 so downstream consumers (e.g. the
+        # manual_ik_pick_place_test detection scan, which filters at 0.35)
+        # actually see marshmallow detections. The white/cream practice
+        # mallow scores around 0.70–0.75 on _marshmallow_score(), so any
+        # frame with slight blur or off-angle drops it under 0.7 and the
+        # detection got dropped at publish time even though the live
+        # preview saw it. Consumers that want a tighter cutoff should
+        # filter on their side rather than blocking publish here.
+        self.declare_parameter("min_display_confidence", 0.30)
         self.declare_parameter("iou_threshold", 0.7)
         self.declare_parameter("max_detections", 20)
         self.declare_parameter("class_filter", DEFAULT_CLASS_FILTER)
