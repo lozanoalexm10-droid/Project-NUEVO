@@ -29,7 +29,7 @@ to convert, and calibrate the offsets in _manipulator_config.py.
 
 Usage example (in a program or test):
     from robot.arm_kinematics import ArmGeometry, inverse_kinematics, OutOfReachError
-    from robot.tests.scripts._manipulator_config import ARM_GEOMETRY
+    from robot._manipulator_config import ARM_GEOMETRY
 
     try:
         turntable_deg, shoulder_deg, elbow_deg = inverse_kinematics(
