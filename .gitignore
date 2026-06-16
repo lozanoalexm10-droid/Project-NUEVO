@@ -15,6 +15,7 @@ openspec/
 CLAUDE.md
 AGENTS.md
 *PLAN.md
+*_plan.md
 
 # ============================================
 # ROS2 Workspace
@@ -22,6 +23,7 @@ AGENTS.md
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+ros2_ws/src/**/build/
 ros2_ws/runtime_output/**
 !ros2_ws/runtime_output/
 !ros2_ws/runtime_output/.gitkeep
@@ -142,6 +144,7 @@ _minted-*/
 # ============================================
 # macOS
 .DS_Store
+**/.DS_Store
 .AppleDouble
 .LSOverride
 ._*
