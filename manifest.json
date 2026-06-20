@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "course": "MAE 162D/E",
+  "year": 2026,
+  "section": "Tsao",
+  "group": 7,
+  "title": "MARSY",
+  "authors": ["Todd Bell", "Joanna Do", "Lena Gudikunst", "Janice Hu", "Gerardo Lozano-Miranda", "William Tjandra"],
+  "summary": "Mobile Autonomous Robotic SYstem — a two-wheeled mobile manipulator that drives a multi-segment competition course with LiDAR obstacle avoidance, then uses vision-guided inverse kinematics to pick a marshmallow from one of four cup stacks of varying height.",
+  "thumbnail": "TODO/path/to/thumbnail.png",
+  "keywords": ["ROS2", "Mobile Robot", "Pick and Place", "Computer Vision", "Obstacle Avoidance"]
+}

@@ -115,12 +115,12 @@ add_arrow(
 add_arrow(
     (x_nav  + w_c / 2, y_main),
     (x_man  - w_c / 2, y_main),
-    label="stop sign at finish\ndrive halted",
+    label="final waypoint reached\nrover parked",
 )
 add_arrow(
     (x_man  + w_c / 2, y_main),
     (x_done - w_s / 2, y_main),
-    label="marshmallow\nplaced",
+    label="arm restowed",
 )
 
 # ─── ESTOP arrows (BTN_2 from every operational state) ────────────────────────
@@ -156,8 +156,6 @@ legend_elems = [
                    label="primitive state"),
     mpatches.Patch(facecolor=COMPOSITE_FILL, edgecolor="black",
                    label="composite state (FSM expanded in cited section)"),
-    mpatches.Patch(facecolor=ESTOP_FILL,     edgecolor="black",
-                   label="safety sink"),
 ]
 ax.legend(handles=legend_elems, loc="lower left", fontsize=9,
           framealpha=1.0, bbox_to_anchor=(0.01, 0.01))
