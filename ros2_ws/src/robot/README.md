@@ -1,249 +1,71 @@
-# Robot API
+# Robot Package
 
-Student-facing control layer for the MAE 162 robotics platform.
+High-level autonomy for MARSY: the Robot API, FSMs, planners, perception integration, and the demo programs that run the full graded course and the precision pick-and-place.
 
-If this README and the code ever disagree, treat
-[`robot/robot.py`](robot/robot.py) as the source of truth.
+This package sits on top of the provided ROS 2 bridge (TLV ⇆ ROS) and below the sensor nodes that feed it. The team's contribution here is the [`programs/`](robot/programs/) tree, the manipulator FSM and inverse kinematics, the lane-switch avoidance customization, and the cup-pair vision logic. The `Robot` class itself and the path-planner scaffolding came from the teaching team and were extended for the venue.
 
 ---
 
-## System Architecture
+## Layout
+
+| Path | What it is |
+|---|---|
+| [`robot.py`](robot/robot.py) | The `Robot` class. Composes four mixins, owns ROS publishers/subscriptions, exposes the public API. |
+| [`robot_impl/`](robot/robot_impl/) | The four mixin modules: `hardware.py` (motor/servo/stepper/LED), `sensors.py` (cached state from the spin thread), `navigation.py` (alternative planner integrations), `legacy.py` (the shipped venue-demo planner path). |
+| [`path_planner.py`](robot/path_planner.py) | Path-planning algorithm classes. See Planners below. |
+| [`arm_kinematics.py`](robot/arm_kinematics.py) | Closed-form 3-DOF inverse kinematics with explicit elbow-up branch selection. |
+| [`hardware_map.py`](robot/hardware_map.py) | Pin mapping, motor IDs, LED/button enums, default rates. |
+| [`_manipulator_config.py`](robot/_manipulator_config.py) | Manipulator geometry, joint limits, calibration constants. |
+| [`sensor_fusion.py`](robot/sensor_fusion.py) | Complementary filters for heading and position. |
+| [`obstacle_tracking.py`](robot/obstacle_tracking.py) | LiDAR cluster tracking that feeds the avoidance planner. |
+| [`programs/`](robot/programs/) | All runnable hardware programs. See [`programs/README.md`](robot/programs/README.md). |
+| [`examples/`](robot/examples/) | Smaller reference snippets for individual API areas. |
+| [`robot_node.py`](robot/robot_node.py) | ROS node entry point. Builds a `Robot`, calls `main.run(robot)`. |
+| [`main.py`](robot/main.py) | Selects which program runs by import. |
+
+---
+
+## Execution model
 
 ```
-┌──────────────────────────────────────────────┐
-│  Layer 3 — Path Planner                      │  pure pursuit, APF
-├──────────────────────────────────────────────┤
-│  Layer 2 — main.py  ← you work here          │  your FSM + helpers
-├──────────────────────────────────────────────┤
-│  Layer 1 — Robot API  (robot.py)             │  wraps all ROS topics
-├──────────────────────────────────────────────┤
-│  bridge node                                 │  ROS ↔ firmware TLV
-└──────────────────────────────────────────────┘
+sensor ROS nodes (vision, LiDAR, GPS/ArUco, ultrasonic)
+        │
+        ▼
+Robot class (robot.py + four mixins)
+        │
+        ▼
+bridge node (TLV ⇆ ROS) ⇆ Arduino firmware over UART
 ```
 
-`Robot` is not a ROS node. It uses the node passed to it at construction to
-create publishers and subscriptions. The bridge node must already be running.
+The ROS spin thread continuously refreshes cached state from sensor topics. The active program runs an explicit FSM loop and issues commands through the Robot API. Path-following methods spin their own nav thread that calls planner `compute_velocity()` and writes drive commands.
+
+Path planners are pure algorithm classes. They do not own ROS subscriptions or threads.
 
 ---
 
-## Node and Planner Design
+## Planners
 
-`robot_node.py` is the only ROS node in this package. It sets up ROS, builds a
-`Robot` wrapper around the live node, and then calls `main.run(robot)`.
+The shipped venue demo ([`programs/demos/full_competition_venue_run.py`](robot/programs/demos/full_competition_venue_run.py)) uses **`PurePursuitPlannerWithAvoidance`** in [`path_planner.py`](robot/path_planner.py), invoked via [`robot_impl/legacy.py`](robot/robot_impl/legacy.py)'s `_nav_follow_pp_path`. When a cone is detected, the planner inserts a hat-shaped detour into the remaining waypoint list: lane offset on entry, hold past obstacle, return to center on exit.
 
-The package is organized in three layers:
-
-```text
-Layer 3: planners in path_planner.py
-Layer 2: student FSM and helpers in main.py
-Layer 1: Robot API in robot.py
-```
-
-The execution model is:
-
-- ROS spin thread updates cached robot state from topics
-- `main.py` runs an explicit FSM loop
-- optional navigation threads call planner `compute_velocity()` and send drive
-  commands through the Robot API
-
-Path planners are pure algorithm classes. They do not own ROS subscriptions or
-threads.
-
-## Planner Status
-
-Supported planners in the current tree:
-
-- `PurePursuitPlanner` — public pure-pursuit path following
-- `APFPlanner` — public APF goal/obstacle field core used by the APF wrapper
-- `LeashedAPFPlanner` — public virtual-target local goal seeker with a forward
-  leash cone
-- `PurePursuitPlannerWithAvoidance` — internal lane-switch obstacle avoidance
-  kept for released lab compatibility
-
-Removed legacy planners:
-
-- DWA obstacle avoidance
-- the second pure-pursuit avoidance prototype
-
-## Current Obstacle Avoidance
-
-Released Lab 5 obstacle avoidance uses the internal
-`PurePursuitPlannerWithAvoidance` planner in [`robot/path_planner.py`](robot/path_planner.py).
-
-The supported reference example is:
-
-- [`robot/examples/obstacle_avoidance.py`](robot/examples/obstacle_avoidance.py)
-
-The current supported flow is:
-
-1. Configure odometry and optional tracked-tag localization in `main.py`
-2. Build a waypoint path with `densify_polyline(...)`
-3. Call `robot._nav_follow_pp_path(...)`
-4. Call `robot._set_obstacle_avoidance_path(path)`
-5. Call `robot._nav_follow_pp_path_loop()` on each FSM tick
-
-This is kept for released lab compatibility.
-
-The current active local-goal avoidance direction is the new LAPF flow:
-
-- [`robot/examples/lapf_to_goal.py`](robot/examples/lapf_to_goal.py)
-- `robot.lapf_to_goal(...)`
-
-It uses tracked lidar obstacle disks plus a leashed virtual target in front of
-the robot.
+The other planners in `path_planner.py` (`APFPlanner`, `LeashedAPFPlanner`, base `PurePursuitPlanner`) are alternative implementations explored during development but **not used in the final demo**. They remain in the tree as reference.
 
 ---
 
-## Before the Robot Moves
+## Entry points
 
-Every program that uses motion needs these four steps in order:
+Two headline programs:
 
-```python
-def configure_robot(robot: Robot) -> None:
-    # 1. Set the unit system for all length and velocity calls
-    robot.set_unit(Unit.MM)
+- [`programs/demos/full_competition_venue_run.py`](robot/programs/demos/full_competition_venue_run.py) for the full graded venue course
+- [`programs/demos/precision_stack_manipulator_demo.py`](robot/programs/demos/precision_stack_manipulator_demo.py) for vision-driven pick-and-place
 
-    # 2. Tell the API which wheels are which and their geometry
-    robot.set_odometry_parameters(
-        wheel_diameter=74.0,
-        wheel_base=333.0,
-        initial_theta_deg=90.0,
-        left_motor_id=Motor.DC_M1,
-        left_motor_dir_inverted=False,
-        right_motor_id=Motor.DC_M2,
-        right_motor_dir_inverted=True,
-    )
-
-def start_robot(robot: Robot) -> None:
-    # 3. Transition firmware to RUNNING (motion commands are ignored in IDLE)
-    robot.set_state(FirmwareState.RUNNING)
-
-    # 4. Zero the odometry pose — move_to coordinates are relative to this
-    robot.reset_odometry()
-    robot.wait_for_pose_update(timeout=0.5)
-```
-
-Call `configure_robot(robot)` at the top of `run()`, then call
-`start_robot(robot)` from your `INIT` state before issuing any motion.
+Select which one runs by uncommenting exactly one import in [`main.py`](robot/main.py).
 
 ---
 
-## Quick Start
+## API conventions
 
-```python
-from robot.hardware_map import Button, DEFAULT_FSM_HZ, LED, Motor
-from robot.robot import FirmwareState, Robot, Unit
-import time
+- **Units**: lengths and velocities use the active `Unit` (set via `robot.set_unit(Unit.MM)` or `Unit.INCH`). Method names ending in `_mm` are always raw millimeters regardless of the active unit.
+- **Angles**: heading is degrees in the public API. The one exception is `max_angular_rad_s` in path-following calls, which is rad/s.
+- **Motion**: high-level motion calls return a `MotionHandle` and accept `blocking=True` (the default) or `blocking=False` (returns immediately; poll with `handle.is_finished()`). Only one high-level motion runs at a time.
 
-def configure_robot(robot):
-    robot.set_unit(Unit.MM)
-    robot.set_odometry_parameters(
-        wheel_diameter=74.0, wheel_base=333.0, initial_theta_deg=90.0,
-        left_motor_id=Motor.DC_M1, left_motor_dir_inverted=False,
-        right_motor_id=Motor.DC_M2, right_motor_dir_inverted=True,
-    )
-
-def run(robot):
-    configure_robot(robot)
-    state = "INIT"
-    handle = None
-    period = 1.0 / float(DEFAULT_FSM_HZ)
-    next_tick = time.monotonic()
-
-    while True:
-        if state == "INIT":
-            if robot.get_state() in (FirmwareState.ESTOP, FirmwareState.ERROR):
-                robot.reset_estop()
-            robot.set_state(FirmwareState.RUNNING)
-            robot.reset_odometry()
-            robot.wait_for_pose_update(timeout=0.5)
-            state = "IDLE"
-
-        elif state == "IDLE":
-            robot.set_led(LED.ORANGE, 200)
-            if robot.was_button_pressed(Button.BTN_1):
-                handle = robot.move_forward(300.0, velocity=100.0,
-                                            tolerance=20.0, blocking=False)
-                state = "MOVING"
-
-        elif state == "MOVING":
-            robot.set_led(LED.GREEN, 200)
-            if handle and handle.is_finished():
-                handle = None
-                robot.stop()
-                state = "IDLE"
-
-        next_tick += period
-        sleep_s = next_tick - time.monotonic()
-        if sleep_s > 0.0:
-            time.sleep(sleep_s)
-        else:
-            next_tick = time.monotonic()
-```
-
----
-
-## The Methods You'll Use Most
-
-| Method | What it does |
-|--------|-------------|
-| `set_unit(Unit.MM)` | Set length unit for all subsequent calls |
-| `set_odometry_parameters(...)` | Configure wheel geometry and motor mapping |
-| `set_state(FirmwareState.RUNNING)` | Enable motion; firmware starts in IDLE |
-| `reset_odometry()` | Zero the pose to `(0, 0, initial_theta_deg)` |
-| `get_pose()` | Read current `(x, y, theta_deg)` from odometry |
-| `move_forward(distance, velocity, tolerance)` | Move forward in a straight line |
-| `turn_by(delta_deg)` | Rotate by a relative heading change |
-| `purepursuit_follow_path(waypoints, ...)` | Follow a multi-waypoint path |
-| `was_button_pressed(button_id)` | One-shot edge detection per button press |
-| `stop()` | Zero the drive motor velocities |
-
-All motion calls accept `blocking=True` (waits for completion, the default)
-and `blocking=False` (returns a `MotionHandle` immediately).
-
----
-
-## MotionHandle
-
-High-level motion methods always return a `MotionHandle`.
-
-```python
-handle = robot.move_to(x=500.0, y=0.0, velocity=100.0,
-                       tolerance=20.0, blocking=False)
-
-# Option A — poll from your FSM loop
-if handle.is_finished():
-    robot.stop()
-
-# Option B — block explicitly with optional timeout
-finished = handle.wait(timeout=10.0)
-
-# Cancel at any time (e.g., emergency button)
-handle.cancel()
-handle.wait(timeout=1.0)
-```
-
-Only one high-level motion can run at a time. Starting a second one while the
-first is still running raises `RuntimeError("Another motion is still running")`.
-
----
-
-## Units and Angles
-
-```python
-robot.set_unit(Unit.MM)    # all length/velocity in millimeters
-robot.set_unit(Unit.INCH)  # all length/velocity in inches
-```
-
-- Length and velocity inputs follow the active unit unless the method name
-  ends in `_mm` (those are always raw millimeters).
-- Heading angles are always **degrees** in the public API.
-- `max_angular_rad_s` in path-following calls is **rad/s** — the one exception.
-
----
-
-## Where to Go Next
-
-- **New to the examples?** → [`robot/examples/README.md`](robot/examples/README.md)
-- **Need parameter details or ROS context?** → [`robot/API_REFERENCE.md`](robot/API_REFERENCE.md)
-- **Source of truth for all method signatures** → [`robot/robot.py`](robot/robot.py)
+Source of truth for all method signatures: [`robot.py`](robot/robot.py).

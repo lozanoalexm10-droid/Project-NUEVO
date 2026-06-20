@@ -127,7 +127,7 @@ Custom PCB and chassis as specified in [`nuevo_board/SPECIFICATIONS.md`](nuevo_b
 
 ### One-time setup
 
-Flash an Ubuntu 22.04 + ROS 2 Humble image to the Pi's SD card and put the Pi on the same WiFi as the workstation. Then:
+Flash an Ubuntu 24.04 + ROS 2 Jazzy image to the Pi's SD card and put the Pi on the same WiFi as the workstation. Then:
 
 ```bash
 git clone https://github.com/lozanoalexm10-droid/Project-NUEVO.git
