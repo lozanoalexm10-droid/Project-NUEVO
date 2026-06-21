@@ -19,11 +19,9 @@ From a kit of four aluminum U-channel pieces, two driven wheels, two omni wheels
 
 On top of the provided software we wrote the manipulator program for vision-guided cup-stack selection, closed-form inverse kinematics, and the pick-and-place FSM. We brought up and calibrated every sensor and actuator on the robot, added our own ROS 2 nodes where the skeleton didn't cover what we needed (e.g., the ultrasonic ranger), tuned the drive PID against encoder feedback, and reworked the provided pure-pursuit follower and obstacle-avoidance planner for the venue course.
 
-See it run: **TODO** add a YouTube link. Paste a URL on its own line (the capstone gallery embeds it):
+See it run:
 
-```
-https://www.youtube.com/watch?v=TODO
-```
+https://www.youtube.com/watch?v=NkwrqGURsrY
 
 ---
 
